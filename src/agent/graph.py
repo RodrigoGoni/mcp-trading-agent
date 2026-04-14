@@ -61,10 +61,8 @@ async def build_agent_input(
     )
     human_msg = HumanMessage(
         content=(
-            f"Step {iteration}. "
-            f"Analyze ALL tickers: {', '.join(tickers)}. "
-            "Retrieve history for each one, then decide buy/sell/hold for every ticker. "
-            "Execute trades where appropriate. Report your reasoning."
+            f"STEP {iteration}. TICKERS: {', '.join(tickers)}. "
+            "GET HISTORY ALL TICKERS. ANALYZE. TRADE. REPORT."
         )
     )
     return {
