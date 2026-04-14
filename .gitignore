@@ -40,3 +40,4 @@ hf_cache/
 
 # Qdrant local data
 qdrant_storage/
+\n# Agent trace logs\nlogs/

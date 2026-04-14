@@ -11,9 +11,11 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import urllib.request
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -33,6 +35,48 @@ from src.models.portfolio import Portfolio
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+_LOGS_DIR = Path(__file__).resolve().parents[2] / "logs"
+
+
+def _setup_agent_log(run_id: str) -> logging.Logger:
+    """Creates a dedicated file logger for the agent trace of this run."""
+    _LOGS_DIR.mkdir(exist_ok=True)
+    log_path = _LOGS_DIR / f"agent_{run_id}.log"
+    agent_logger = logging.getLogger(f"agent_trace.{run_id}")
+    agent_logger.setLevel(logging.DEBUG)
+    agent_logger.propagate = False  # don't bubble up to root
+    if not agent_logger.handlers:
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        agent_logger.addHandler(fh)
+    console.print(f"[dim]Agent trace → {log_path}[/dim]")
+    return agent_logger
+
+
+def _log_step_messages(agent_logger: logging.Logger, step: int, date_str: str, messages: list) -> None:
+    """Writes all messages (input + tool calls + output) from one agent step to the log file."""
+    agent_logger.debug("=" * 72)
+    agent_logger.debug(f"STEP {step}  |  {date_str}")
+    agent_logger.debug("=" * 72)
+    for msg in messages:
+        role = type(msg).__name__.replace("Message", "").upper()  # Human, AI, Tool, System
+        content = getattr(msg, "content", "")
+        # Tool calls embedded in AIMessage
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            for tc in tool_calls:
+                name = tc.get("name", "?") if isinstance(tc, dict) else getattr(tc, "name", "?")
+                args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                agent_logger.debug(f"[{role} → TOOL_CALL: {name}] {json.dumps(args, ensure_ascii=False)}")
+        if content:
+            # Lists (multipart content)
+            if isinstance(content, list):
+                content = " ".join(
+                    c.get("text", "") if isinstance(c, dict) else str(c) for c in content
+                )
+            agent_logger.debug(f"[{role}] {content}")
+    agent_logger.debug("")
 
 
 def _find_free_port(start: int = 18_765) -> int:
@@ -196,6 +240,7 @@ async def run(
     run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
     portfolio = Portfolio(cash=initial_capital)
     store = DecisionStore(run_id=run_id)
+    agent_logger = _setup_agent_log(run_id)
     if reset:
         console.print("[yellow]Resetting Qdrant collection…[/yellow]")
         store.clear_collection()
@@ -275,6 +320,7 @@ async def run(
                     for c in agent_summary
                 )
             agent_summary = str(agent_summary)[:800]
+            _log_step_messages(agent_logger, i, date_str, result["messages"])
         except Exception as e:
             logger.error(f"Error in step {i} ({date_str}): {e}")
             agent_summary = f"Error: {e}"
