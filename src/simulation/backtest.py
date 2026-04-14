@@ -438,4 +438,6 @@ async def run(
     console.print(f"\n[bold]Decisions saved in Qdrant:[/bold] collection '{settings.qdrant_collection}'")
     console.rule()
 
+    # Graceful MCP server shutdown — give uvicorn a moment to close SSE connections
     mcp_server.should_exit = True
+    await asyncio.sleep(1.0)

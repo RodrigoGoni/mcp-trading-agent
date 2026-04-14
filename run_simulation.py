@@ -77,8 +77,11 @@ def main() -> None:
     # Silence noisy HTTP/SSE request logs from httpx and httpcore
     # unless the user explicitly requests DEBUG
     if args.log_level != "DEBUG":
-        for _noisy in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection"):
-            logging.getLogger(_noisy).setLevel(logging.WARNING)
+        for _noisy in (
+            "httpx", "httpcore", "httpcore.http11", "httpcore.connection",
+            "uvicorn.error", "uvicorn.access", "starlette.routing",
+        ):
+            logging.getLogger(_noisy).setLevel(logging.CRITICAL)
 
     # Parameters: CLI > .env
     tickers = [t.upper() for t in args.tickers] if args.tickers else settings.tickers
