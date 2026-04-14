@@ -23,13 +23,6 @@ from src.agent.state import SimulationState
 logger = logging.getLogger(__name__)
 
 
-# ── Qwen2.5 tool-call XML → LangChain tool_calls patch ──────────────────────
-# Qwen2.5-Instruct emits tool calls as <tool_call>JSON</tool_call> inside the
-# `content` field. When the vLLM parser does not handle this format (e.g. after
-# the removal of the `qwen25` parser), the XML leaks as plain text and LangGraph
-# never executes the tools. This class intercepts the raw ChatResult and converts
-# the XML blocks to proper LangChain ToolCall dicts before LangGraph sees them.
-
 def _extract_xml_tool_calls(content: str) -> tuple[list[dict], str]:
     """
     Parses all <tool_call>JSON</tool_call> blocks from *content*.
@@ -70,8 +63,9 @@ def _patch_ai_message(msg: AIMessage) -> AIMessage:
         return msg
 
     logger.debug("XML tool-call patch: extracted %d tool calls from content", len(tool_calls))
+    # Discard any residual text alongside the tool calls (e.g. Russian "thinking" text)
     return AIMessage(
-        content=clean_content,
+        content="",
         tool_calls=tool_calls,
         id=msg.id,
         response_metadata=msg.response_metadata,
