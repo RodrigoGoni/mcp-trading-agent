@@ -57,6 +57,10 @@ def parse_args() -> argparse.Namespace:
         help="Backtest granularity. Default: BACKTEST_INTERVAL in .env",
     )
     parser.add_argument(
+        "--reset", action="store_true",
+        help="Clear the Qdrant collection before starting (removes ALL previous runs).",
+    )
+    parser.add_argument(
         "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="WARNING",
         help="Logging level. Default: WARNING",
     )
@@ -82,6 +86,7 @@ def main() -> None:
         years=years,
         tickers=tickers,
         interval=interval,
+        reset=args.reset,
     ))
 
 
