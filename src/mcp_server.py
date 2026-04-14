@@ -30,6 +30,7 @@ mcp = FastMCP("finance-agent")
 # Portfolio global — se reemplaza en _init_portfolio()
 _portfolio: Portfolio = Portfolio(cash=settings.initial_capital)
 _current_date: str = ""
+_bought_this_step: set = set()   # tickers bought during the current step (dedup guard)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -195,19 +196,38 @@ def execute_buy(tickers: Union[str, list], shares: float, rationale: str = "") -
     Args: tickers (str, e.g. 'AAPL'), shares (float), rationale (str, optional).
     Returns JSON {success, message, trade}."""
     ticker = tickers[0] if isinstance(tickers, list) else tickers
+    # Deduplication guard: reject a second buy of the same ticker in the same step
+    if ticker in _bought_this_step:
+        return json.dumps({"success": False,
+                           "message": f"Already bought {ticker} this step. Skipping duplicate."})
     date_str = _current_date or datetime.today().strftime("%Y-%m-%d")
     price_data = json.loads(get_price(ticker, date_str))  # type: ignore[possibly-undefined]
     if "error" in price_data:
         return json.dumps({"success": False, "message": price_data["error"]})
     price = price_data["close"]
     dt = datetime.strptime(price_data["date"], "%Y-%m-%d").date()
+    # Auto-clamp shares to what the portfolio can actually afford:
+    # budget = min(cash * (1 - min_cash_pct), total_value * max_position_pct)
+    prices_now = {t: price if t == ticker else 0.0 for t in _portfolio.positions}
+    total_value = _portfolio.total_value(prices_now) or _portfolio.cash
+    max_budget = min(
+        _portfolio.cash * (1 - settings.min_cash_pct),
+        total_value * settings.max_position_pct,
+    )
+    max_shares = max_budget / price if price > 0 else 0
+    if shares > max_shares:
+        shares = round(max_shares, 4)
+    if shares <= 0:
+        return json.dumps({"success": False,
+                           "message": f"Insufficient budget to buy {ticker} at ${price:.2f}"})
     ok = _portfolio.buy(ticker, shares, price, dt, rationale)
     if ok:
+        _bought_this_step.add(ticker)
         trade = _portfolio.trades[-1]
         return json.dumps({"success": True, "message": f"Bought {shares} {ticker} at ${price:.2f}",
                            "trade": trade.to_dict()})
     return json.dumps({"success": False,
-                       "message": f"Insufficient funds. Available cash: ${_portfolio.cash:.2f}, cost: ${shares*price:.2f}"})
+                       "message": f"Could not execute buy for {ticker}"})
 
 
 @mcp.tool()
@@ -243,9 +263,10 @@ def set_portfolio(portfolio: Portfolio) -> None:
 
 
 def set_current_date(date_str: str) -> None:
-    """Updates the current simulation date."""
-    global _current_date
+    """Updates the current simulation date (and resets the dedup guard)."""
+    global _current_date, _bought_this_step
     _current_date = date_str
+    _bought_this_step = set()
 
 
 if __name__ == "__main__":
