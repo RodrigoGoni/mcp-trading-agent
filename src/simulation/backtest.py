@@ -111,8 +111,12 @@ async def _run_agent_streaming(
                             c.get("text", "") if isinstance(c, dict) else str(c)
                             for c in content
                         )
-                    if content and not getattr(msg, "tool_calls", None):
-                        console.print(f"  [bold yellow]DECISION:[/bold yellow] {str(content)[:400]}")
+                    # Skip raw <tool_call> XML blobs that the parser missed
+                    content_str = str(content).strip()
+                    has_tool_calls = bool(getattr(msg, "tool_calls", None))
+                    has_raw_xml = "<tool_call>" in content_str or "\"name\"" in content_str[:60]
+                    if content_str and not has_tool_calls and not has_raw_xml:
+                        console.print(f"  [bold yellow]DECISION:[/bold yellow] {content_str[:400]}")
                 elif isinstance(msg, ToolMessage):
                     raw = getattr(msg, "content", "")
                     preview = str(raw)[:200]
