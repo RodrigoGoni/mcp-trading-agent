@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.request
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 import yfinance as yf
 import uvicorn
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.prebuilt import create_react_agent
 from rich.console import Console
 from rich.table import Table
 from rich import box
@@ -95,16 +98,46 @@ def _apply_period_dividends(
         try:
             t = yf.Ticker(ticker)
             divs = t.dividends
-            if divs.empty:
+            if divs is None or divs.empty:
                 continue
-            mask = (divs.index.date >= start) & (divs.index.date <= end)
+            # yfinance may return a DataFrame with a "Dividends" column — extract Series
+            if isinstance(divs, pd.DataFrame):
+                col = "Dividends" if "Dividends" in divs.columns else divs.columns[0]
+                divs = divs[col]
+            divs = divs.squeeze()
+            # Normalize index: remove timezone and collapse to date-only timestamps
+            idx_norm = pd.to_datetime(divs.index).tz_localize(None).normalize()
+            divs = divs.copy()
+            divs.index = idx_norm
+            mask = (divs.index >= pd.Timestamp(start)) & (divs.index <= pd.Timestamp(end))
             period_divs = divs[mask]
             for _, dps in period_divs.items():
-                amount = portfolio.apply_dividends(ticker, float(dps), end)
+                # dps may be a scalar or a 1-element Series on duplicate dates
+                scalar = float(dps.iloc[0]) if hasattr(dps, "iloc") else float(dps)
+                amount = portfolio.apply_dividends(ticker, scalar, end)
                 applied[ticker] = applied.get(ticker, 0.0) + amount
         except Exception as e:
             logger.warning(f"Error fetching dividends for {ticker}: {e}")
     return applied
+
+
+# ── vLLM readiness check ─────────────────────────────────────────────────────────────────
+
+async def _wait_for_vllm(base_url: str, timeout_s: int = 300) -> None:
+    """Blocks until the vLLM /health endpoint responds 200, or raises TimeoutError."""
+    health_url = base_url.rstrip("/").removesuffix("/v1") + "/health"
+    console.print(f"[dim]Waiting for vLLM at {health_url} (up to {timeout_s}s)…[/dim]")
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            req = urllib.request.urlopen(health_url, timeout=3)  # noqa: S310
+            if req.status == 200:
+                console.print("[green]vLLM is ready.[/green]")
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(5)
+    raise TimeoutError(f"vLLM did not become ready within {timeout_s}s ({health_url})")
 
 
 # ── In-process MCP server ──────────────────────────────────────────────────────────────
@@ -138,6 +171,7 @@ async def run(
     years: int,
     tickers: List[str],
     interval: str = "1wk",
+    reset: bool = False,
 ) -> None:
     """
     Runs the complete backtest.
@@ -148,15 +182,24 @@ async def run(
     years           : number of years to simulate backwards
     tickers         : list of available tickers
     interval        : granularity ("1d", "1wk", "1mo")
+    reset           : if True, clears the Qdrant collection before starting
     """
+    # Ensure vLLM is ready before doing anything else
+    await _wait_for_vllm(settings.vllm_base_url)
+
     console.rule("[bold green]Finance Agent — Backtest Started")
     console.print(f"Initial capital: [bold]{initial_capital:,.2f} USD[/bold]")
     console.print(f"Period: {years} year(s) | Interval: {interval}")
     console.print(f"Tickers: [cyan]{', '.join(tickers)}[/cyan]\n")
 
     # Initialize portfolio and memory
+    run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
     portfolio = Portfolio(cash=initial_capital)
-    store = DecisionStore()
+    store = DecisionStore(run_id=run_id)
+    if reset:
+        console.print("[yellow]Resetting Qdrant collection…[/yellow]")
+        store.clear_collection()
+    console.print(f"[dim]Run ID: {run_id}[/dim]")
 
     # Inject portfolio into the MCP server (same process)
     mcp_module.set_portfolio(portfolio)
@@ -182,7 +225,6 @@ async def run(
         }
     )
     tools = await mcp_client.get_tools()
-    from langgraph.prebuilt import create_react_agent
     llm = build_llm()
     agent = create_react_agent(llm, tools)
 
@@ -350,5 +392,4 @@ async def run(
     console.print(f"\n[bold]Decisions saved in Qdrant:[/bold] collection '{settings.qdrant_collection}'")
     console.rule()
 
-    # Parar el servidor MCP
     mcp_server.should_exit = True
