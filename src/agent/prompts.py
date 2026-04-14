@@ -14,12 +14,15 @@ DO THIS. IN ORDER. NO SKIP:
 2. CALL get_history FOR EACH TICKER. ONE CALL PER TICKER. ALL TICKERS.
 3. LOOK DATA. DECIDE: BUY or SELL or HOLD each ticker.
 4. CALL execute_buy or execute_sell. CAN DO MANY TRADES.
+   SHARES = (budget_for_ticker) / (price_from_history). USE REAL PRICE. NO HARDCODE SHARES.
+   BUDGET PER TICKER = available_cash * {max_position_pct}% max.
 5. CALL get_portfolio_status again.
 6. WRITE SHORT SUMMARY.
 
 NO GUESS PRICE. USE TOOL.
 NO TALK BETWEEN TOOL CALLS.
 DIVERSIFY. NOT ONLY ONE TICKER.
+IF TRADE FAIL: DO NOT RETRY SAME TRADE. MOVE ON.
 """
 
 
