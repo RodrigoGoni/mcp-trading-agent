@@ -1,0 +1,30 @@
+# Dockerfile.vllm
+# ----------------
+# Serves Qwen2.5-32B-Instruct-AWQ via vLLM with an OpenAI-compatible API.
+# GPU required: NVIDIA with >=24 GB VRAM (AWQ 4-bit uses ~18-20 GB).
+#
+# The model is downloaded from HuggingFace on first start and cached in
+# /root/.cache/huggingface (mounted as a named volume in docker-compose).
+#
+# API surface: http://vllm:8000/v1  (OpenAI-compatible)
+
+FROM vllm/vllm-openai:latest
+
+# Expose the OpenAI-compatible endpoint
+EXPOSE 8000
+
+# Health check — waits until the /health endpoint returns 200
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+    CMD curl -sf http://localhost:8000/health || exit 1
+
+ENTRYPOINT ["python", "-m", "vllm.entrypoints.openai.api_server"]
+CMD [ \
+    "--model", "Qwen/Qwen2.5-32B-Instruct-AWQ", \
+    "--quantization", "awq", \
+    "--dtype", "auto", \
+    "--max-model-len", "8192", \
+    "--gpu-memory-utilization", "0.90", \
+    "--host", "0.0.0.0", \
+    "--port", "8000", \
+    "--served-model-name", "Qwen/Qwen2.5-32B-Instruct-AWQ" \
+]

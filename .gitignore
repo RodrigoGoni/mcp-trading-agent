@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables (secrets)
+.env
+
+# Logs
+*.log
+/tmp/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Model weights / HuggingFace cache
+*.safetensors
+*.bin
+*.pt
+*.gguf
+hf_cache/
+
+# Qdrant local data
+qdrant_storage/

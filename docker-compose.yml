@@ -1,0 +1,111 @@
+# docker-compose.yml
+# -------------------
+# Three-service stack:
+#   qdrant  — local vector database  (port 6333)
+#   vllm    — local LLM server       (port 8000)  [requires NVIDIA GPU]
+#   app     — Streamlit chatbot      (port 8501)
+#
+# First-time setup:
+#   1. Place CVs at data/cvs/rodrigo.pdf and data/cvs/tomas.pdf
+#   2. Copy .env.example to .env and fill in GEMINI_API_KEY if using semantic chunking
+#   3. docker compose up qdrant -d
+#   4. python -m src.ingestion --agent all   (runs against host Qdrant on :6333)
+#      OR inside a one-shot container:
+#      docker compose run --rm app python -m src.ingestion --agent all
+#   5. docker compose up
+#
+# Access the app at http://localhost:8501
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — local vector database
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # HTTP REST API
+      - "6334:6334"   # gRPC (optional)
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/6333 && echo OK || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # vLLM — local LLM server (Qwen2.5-14B-Instruct-AWQ)
+  # ~10 GB VRAM para pesos → deja ~12 GB para KV cache → soporta 32k contexto
+  # Requires: NVIDIA GPU with >=16 GB VRAM + nvidia-container-toolkit
+  # ---------------------------------------------------------------------------
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: rag_vllm
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # caché local del usuario
+    command: [
+      "Qwen/Qwen2.5-14B-Instruct-AWQ",
+      "--quantization", "awq_marlin",
+      "--dtype", "auto",
+      "--max-model-len", "32768",
+      "--gpu-memory-utilization", "0.88",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--served-model-name", "Qwen/Qwen2.5-14B-Instruct-AWQ",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser", "hermes"
+    ]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s   # model download + load can take ~5 min
+
+  # ---------------------------------------------------------------------------
+  # Streamlit app
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    container_name: rag_app
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data          # mount CVs so ingestion writes are visible
+    env_file:
+      - .env
+    environment:
+      # Override defaults to point to sibling containers
+      - QDRANT_URL=http://qdrant:6333
+      - VLLM_BASE_URL=http://vllm:8000/v1
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+volumes:
+  qdrant_storage:
+    driver: local

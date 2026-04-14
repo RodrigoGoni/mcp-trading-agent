@@ -1,0 +1,45 @@
+5# ── LangChain suite ──────────────────────────────────────────────────────────
+langchain>=1.2
+langchain-core>=1.2
+langchain-openai>=1.1
+langchain-community>=0.4
+langchain-huggingface>=1.2
+langchain-google-genai>=2.1
+langchain-qdrant>=1.1
+langchain-experimental>=0.4
+langchain-text-splitters>=1.1
+
+# ── LangGraph ─────────────────────────────────────────────────────────────────
+langgraph>=1.1
+# IMPORTANTE: instalar langgraph-prebuilt DESPUÉS de langgraph y con --no-deps
+# pip install langgraph-prebuilt==1.0.9 --no-deps
+langgraph-prebuilt==1.0.9
+
+# ── MCP (Model Context Protocol) ─────────────────────────────────────────────
+mcp[cli]>=1.27
+langchain-mcp-adapters>=0.2
+
+# ── Mercado / Finanzas ────────────────────────────────────────────────────────
+yfinance>=1.2
+
+# ── Vector store ─────────────────────────────────────────────────────────────
+qdrant-client>=1.17
+sentence-transformers>=3.4
+
+# ── LLM ──────────────────────────────────────────────────────────────────────
+openai>=2.0
+google-genai>=1.0.0
+
+# ── Servidor MCP (SSE transport) ─────────────────────────────────────────────
+uvicorn>=0.44
+starlette>=0.41
+
+# ── UI / Output ──────────────────────────────────────────────────────────────
+rich>=15.0
+streamlit==1.44.0
+
+# ── Utilidades ───────────────────────────────────────────────────────────────
+python-dotenv>=1.1
+pydantic>=2.13
+pydantic-settings>=2.0
+pypdf==5.4.0
