@@ -26,7 +26,7 @@ def build_llm() -> ChatOpenAI:
         base_url=settings.vllm_base_url,
         api_key="not-needed",          # vLLM does not require an API key
         temperature=0.1,               # low temperature for more deterministic decisions
-        max_tokens=512,
+        max_tokens=2048,
     )
 
 
@@ -60,7 +60,12 @@ async def build_agent_input(
         )
     )
     human_msg = HumanMessage(
-        content=f"Step {iteration}. Check portfolio. Analyze prices. Buy/sell/hold. Report."
+        content=(
+            f"Step {iteration}. "
+            f"Analyze ALL tickers: {', '.join(tickers)}. "
+            "Retrieve history for each one, then decide buy/sell/hold for every ticker. "
+            "Execute trades where appropriate. Report your reasoning."
+        )
     )
     return {
         "messages": [system_msg, human_msg],
