@@ -23,10 +23,45 @@ from src.agent.state import SimulationState
 logger = logging.getLogger(__name__)
 
 
+def _eval_arithmetic_in_json(raw: str) -> str:
+    """
+    Replaces Python arithmetic expressions inside a JSON string with their
+    computed float value so that json.loads() can parse them.
+
+    Example:
+      "shares": (10000.0 * 0.25) / 174.9577
+      →  "shares": 14.289...
+
+    Only expressions containing digits, operators (+-*/.%), spaces and
+    parentheses are evaluated; anything else is left untouched.
+    """
+    # Match a value that looks like a Python numeric expression (not quoted)
+    # e.g.:  (10000.0 * 0.25) / 174.9577  or  2500 / 174.9577
+    expr_pattern = re.compile(
+        r'(?<=[:{,\[])\s*'           # preceded by JSON structural char
+        r'([\d\s\.\+\-\*\/\%\(\)]+)'  # the expression: digits, ops, parens
+        r'(?=\s*[,}\]])',             # followed by JSON structural char
+    )
+
+    def _safe_eval(m: re.Match) -> str:
+        expr = m.group(1).strip()
+        # Only evaluate if it looks like pure arithmetic (no letters)
+        if re.fullmatch(r'[\d\s\.\+\-\*\/\%\(\)]+', expr):
+            try:
+                value = float(eval(expr))  # noqa: S307 — safe: only digits/ops
+                return f" {round(value, 6)}"
+            except Exception:
+                pass
+        return m.group(0)  # leave unchanged
+
+    return expr_pattern.sub(_safe_eval, raw)
+
+
 def _extract_xml_tool_calls(content: str) -> tuple[list[dict], str]:
     """
     Parses all <tool_call>JSON</tool_call> blocks from *content*.
     Returns (tool_calls, clean_content) where clean_content has the XML removed.
+    Handles Qwen2.5's habit of embedding Python arithmetic expressions as values.
     """
     pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
     blocks = re.findall(pattern, content, re.DOTALL)
@@ -34,14 +69,20 @@ def _extract_xml_tool_calls(content: str) -> tuple[list[dict], str]:
     for raw in blocks:
         try:
             data = json.loads(raw)
-            tool_calls.append({
-                "id": f"call_{uuid.uuid4().hex[:8]}",
-                "name": data.get("name", ""),
-                "args": data.get("arguments", data.get("args", {})),
-                "type": "tool_call",
-            })
         except json.JSONDecodeError:
-            logger.warning("Could not parse tool_call JSON: %s", raw[:200])
+            # Try to fix Python arithmetic expressions and retry
+            fixed = _eval_arithmetic_in_json(raw)
+            try:
+                data = json.loads(fixed)
+            except json.JSONDecodeError:
+                logger.warning("Could not parse tool_call JSON: %s", raw[:200])
+                continue
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "name": data.get("name", ""),
+            "args": data.get("arguments", data.get("args", {})),
+            "type": "tool_call",
+        })
 
     clean = re.sub(pattern, "", content, flags=re.DOTALL).strip()
     return tool_calls, clean
