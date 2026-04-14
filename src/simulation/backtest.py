@@ -28,7 +28,7 @@ from rich.table import Table
 from rich import box
 
 import src.mcp_server as mcp_module
-from src.agent.graph import build_llm, run_agent_step
+from src.agent.graph import build_llm, build_agent_input
 from src.config import settings
 from src.memory.qdrant_store import DecisionStore
 from src.models.portfolio import Portfolio
@@ -60,9 +60,8 @@ def _log_step_messages(agent_logger: logging.Logger, step: int, date_str: str, m
     agent_logger.debug(f"STEP {step}  |  {date_str}")
     agent_logger.debug("=" * 72)
     for msg in messages:
-        role = type(msg).__name__.replace("Message", "").upper()  # Human, AI, Tool, System
+        role = type(msg).__name__.replace("Message", "").upper()
         content = getattr(msg, "content", "")
-        # Tool calls embedded in AIMessage
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             for tc in tool_calls:
@@ -70,13 +69,58 @@ def _log_step_messages(agent_logger: logging.Logger, step: int, date_str: str, m
                 args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
                 agent_logger.debug(f"[{role} → TOOL_CALL: {name}] {json.dumps(args, ensure_ascii=False)}")
         if content:
-            # Lists (multipart content)
             if isinstance(content, list):
                 content = " ".join(
                     c.get("text", "") if isinstance(c, dict) else str(c) for c in content
                 )
             agent_logger.debug(f"[{role}] {content}")
     agent_logger.debug("")
+
+
+async def _run_agent_streaming(
+    agent: Any,
+    initial_state: Dict[str, Any],
+    agent_logger: logging.Logger,
+    step: int,
+    date_str: str,
+) -> Dict[str, Any]:
+    """
+    Runs the agent with astream() so every tool call and result is visible
+    in the console in real time. Returns the final state dict.
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    all_messages: list = list(initial_state["messages"])
+
+    async for chunk in agent.astream(initial_state):
+        for node_name, node_output in chunk.items():
+            msgs = node_output.get("messages", []) if isinstance(node_output, dict) else []
+            for msg in msgs:
+                all_messages.append(msg)
+                if isinstance(msg, AIMessage):
+                    # Tool calls requested by the model
+                    for tc in getattr(msg, "tool_calls", []):
+                        name = tc.get("name", "?") if isinstance(tc, dict) else getattr(tc, "name", "?")
+                        args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                        args_str = json.dumps(args, ensure_ascii=False)
+                        console.print(f"  [cyan]→ TOOL[/cyan] [bold]{name}[/bold]  [dim]{args_str[:120]}[/dim]")
+                    # Final AI response (no pending tool calls)
+                    content = getattr(msg, "content", "")
+                    if isinstance(content, list):
+                        content = " ".join(
+                            c.get("text", "") if isinstance(c, dict) else str(c)
+                            for c in content
+                        )
+                    if content and not getattr(msg, "tool_calls", None):
+                        console.print(f"  [bold yellow]DECISION:[/bold yellow] {str(content)[:400]}")
+                elif isinstance(msg, ToolMessage):
+                    raw = getattr(msg, "content", "")
+                    preview = str(raw)[:200]
+                    console.print(f"  [magenta]← RESULT[/magenta] [dim]{preview}[/dim]")
+
+    result = {"messages": all_messages}
+    _log_step_messages(agent_logger, step, date_str, all_messages)
+    return result
 
 
 def _find_free_port(start: int = 18_765) -> int:
@@ -301,16 +345,16 @@ async def run(
         console.print(f"  Portfolio: [bold]${current_value:,.2f}[/bold] "
                       f"(cash: ${portfolio.cash:,.2f})")
 
-        # 3. Invoke the agent
+        # 3. Invoke the agent (streaming for real-time observability)
         prev_trade_count = len(portfolio.trades)
         try:
-            result = await run_agent_step(
-                agent=agent,
+            initial_state = await build_agent_input(
                 current_date=date_str,
                 portfolio_snapshot=portfolio_snapshot,
                 tickers=tickers,
                 iteration=i,
             )
+            result = await _run_agent_streaming(agent, initial_state, agent_logger, i, date_str)
             # Extract the last agent message as summary
             last_msg = result["messages"][-1]
             agent_summary = getattr(last_msg, "content", str(last_msg))
@@ -320,7 +364,6 @@ async def run(
                     for c in agent_summary
                 )
             agent_summary = str(agent_summary)[:800]
-            _log_step_messages(agent_logger, i, date_str, result["messages"])
         except Exception as e:
             logger.error(f"Error in step {i} ({date_str}): {e}")
             agent_summary = f"Error: {e}"

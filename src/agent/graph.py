@@ -43,17 +43,13 @@ async def build_mcp_agent_tools(mcp_url: str) -> tuple[Any, list]:
     return agent, tools
 
 
-async def run_agent_step(
-    agent: Any,
+async def build_agent_input(
     current_date: str,
     portfolio_snapshot: Dict[str, Any],
     tickers: List[str],
     iteration: int,
-) -> Dict[str, Any]:
-    """
-    Executes one agent step for the given date.
-    Returns the final state with messages and actions taken.
-    """
+) -> SimulationState:
+    """Builds the initial state dict for an agent step."""
     system_msg = SystemMessage(
         content=build_system_prompt(
             current_date=current_date,
@@ -66,8 +62,7 @@ async def run_agent_step(
     human_msg = HumanMessage(
         content=f"Step {iteration}. Check portfolio. Analyze prices. Buy/sell/hold. Report."
     )
-
-    initial_state: SimulationState = {
+    return {
         "messages": [system_msg, human_msg],
         "current_date": current_date,
         "portfolio_snapshot": portfolio_snapshot,
@@ -75,5 +70,18 @@ async def run_agent_step(
         "tickers": tickers,
     }
 
+
+async def run_agent_step(
+    agent: Any,
+    current_date: str,
+    portfolio_snapshot: Dict[str, Any],
+    tickers: List[str],
+    iteration: int,
+) -> Dict[str, Any]:
+    """
+    Executes one agent step for the given date.
+    Returns the final state with messages and actions taken.
+    """
+    initial_state = await build_agent_input(current_date, portfolio_snapshot, tickers, iteration)
     result = await agent.ainvoke(initial_state)
     return result
