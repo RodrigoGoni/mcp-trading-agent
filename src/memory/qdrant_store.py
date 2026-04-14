@@ -34,10 +34,11 @@ class DecisionStore:
 
     VECTOR_DIM = 384  # all-MiniLM-L6-v2 produces 384-dim vectors
 
-    def __init__(self) -> None:
+    def __init__(self, run_id: Optional[str] = None) -> None:
         self.client = QdrantClient(url=settings.qdrant_url)
         self.collection = settings.qdrant_collection
         self.encoder = SentenceTransformer(settings.embedding_model)
+        self.run_id = run_id or datetime.utcnow().strftime("%Y%m%dT%H%M%S")
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
@@ -51,6 +52,15 @@ class DecisionStore:
             logger.info(f"Collection '{self.collection}' created in Qdrant.")
         else:
             logger.debug(f"Collection '{self.collection}' already exists.")
+
+    def clear_collection(self) -> None:
+        """Deletes and recreates the collection (removes ALL runs)."""
+        self.client.delete_collection(self.collection)
+        self.client.create_collection(
+            collection_name=self.collection,
+            vectors_config=VectorParams(size=self.VECTOR_DIM, distance=Distance.COSINE),
+        )
+        logger.info(f"Collection '{self.collection}' cleared.")
 
     def _embed(self, text: str) -> List[float]:
         return self.encoder.encode(text, normalize_embeddings=True).tolist()
@@ -76,6 +86,7 @@ class DecisionStore:
         )
         vector = self._embed(text_to_embed)
         payload = {
+            "run_id": self.run_id,
             "date": date,
             "portfolio_value": portfolio_value,
             "trades": trades_executed,
@@ -113,10 +124,16 @@ class DecisionStore:
             for r in results
         ]
 
-    def get_all_decisions(self) -> List[Dict[str, Any]]:
-        """Returns all stored decisions, sorted by date."""
+    def get_all_decisions(self, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns all stored decisions, sorted by date. Optionally filters by run_id."""
+        scroll_filter = None
+        if run_id:
+            scroll_filter = Filter(
+                must=[FieldCondition(key="run_id", match=MatchValue(value=run_id))]
+            )
         results, _ = self.client.scroll(
             collection_name=self.collection,
+            scroll_filter=scroll_filter,
             limit=10_000,
             with_payload=True,
         )
