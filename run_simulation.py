@@ -80,6 +80,7 @@ def main() -> None:
         for _noisy in (
             "httpx", "httpcore", "httpcore.http11", "httpcore.connection",
             "uvicorn.error", "uvicorn.access", "starlette.routing",
+            "mcp.server", "mcp.server.session", "mcp.server.lowlevel",
         ):
             logging.getLogger(_noisy).setLevel(logging.CRITICAL)
 
