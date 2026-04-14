@@ -58,51 +58,69 @@ def _ival(v) -> int:
 
 @mcp.tool()
 def get_price(tickers: Union[str, list], date: str) -> str:
-    """Get adjusted close price for ONE ticker on a given date.
-    Args: tickers (str, e.g. 'AAPL'), date (str, YYYY-MM-DD).
-    Returns JSON {ticker, date, close, open, high, low, volume}."""
-    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    """Get adjusted close price for one OR multiple tickers on a given date.
+    Args: tickers (str or list, e.g. 'AAPL' or ['AAPL','MSFT']), date (YYYY-MM-DD).
+    Returns JSON object {ticker: {date, close, open, high, low, volume}} for each ticker."""
+    ticker_list = tickers if isinstance(tickers, list) else [tickers]
     end = _cap_end(date)
     start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
-    df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-    if df.empty:
-        return json.dumps({"error": f"No data for {ticker} around {date}"})
-    row = df.iloc[-1]
-    return json.dumps({
-        "ticker": ticker,
-        "date": str(df.index[-1].date()),
-        "close": round(_fval(row["Close"]), 4),
-        "open": round(_fval(row["Open"]), 4),
-        "high": round(_fval(row["High"]), 4),
-        "low": round(_fval(row["Low"]), 4),
-        "volume": _ival(row["Volume"]),
-    })
+    results: dict = {}
+    for ticker in ticker_list:
+        try:
+            df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            if df.empty:
+                results[ticker] = {"error": f"No data around {date}"}
+                continue
+            row = df.iloc[-1]
+            results[ticker] = {
+                "date": str(df.index[-1].date()),
+                "close": round(_fval(row["Close"]), 4),
+                "open": round(_fval(row["Open"]), 4),
+                "high": round(_fval(row["High"]), 4),
+                "low": round(_fval(row["Low"]), 4),
+                "volume": _ival(row["Volume"]),
+            }
+        except Exception as e:
+            results[ticker] = {"error": str(e)}
+    # If a single ticker string was passed, keep backward-compat shape
+    if isinstance(tickers, str):
+        return json.dumps({"ticker": tickers, **results[tickers]})
+    return json.dumps(results)
 
 
 @mcp.tool()
 def get_history(tickers: Union[str, list], end_date: str, lookback_weeks: int = 12) -> str:
-    """Get weekly OHLCV history for ONE ticker.
-    Args: tickers (str, e.g. 'AAPL'), end_date (YYYY-MM-DD), lookback_weeks (int, default 8).
-    Returns JSON array [{date, open, high, low, close, volume}]."""
-    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    """Get weekly OHLCV history for one OR multiple tickers.
+    Args: tickers (str or list, e.g. 'AAPL' or ['AAPL','MSFT']), end_date (YYYY-MM-DD), lookback_weeks (int, default 12).
+    Returns JSON object {ticker: [{date, open, high, low, close, volume}]} for each ticker."""
+    ticker_list = tickers if isinstance(tickers, list) else [tickers]
     end = _cap_end(end_date)
     start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(weeks=lookback_weeks)).strftime("%Y-%m-%d")
-    df = yf.download(ticker, start=start, end=end, interval="1wk",  # noqa: E501
-                     progress=False, auto_adjust=True)
-    if df.empty:
-        return json.dumps({"error": f"No history for {ticker}"})
-    records = [
-        {
-            "date": str(idx.date()),
-            "open": round(_fval(row["Open"]), 4),
-            "high": round(_fval(row["High"]), 4),
-            "low": round(_fval(row["Low"]), 4),
-            "close": round(_fval(row["Close"]), 4),
-            "volume": _ival(row["Volume"]),
-        }
-        for idx, row in df.iterrows()
-    ]
-    return json.dumps(records)
+    results: dict = {}
+    for ticker in ticker_list:
+        try:
+            df = yf.download(ticker, start=start, end=end, interval="1wk",
+                             progress=False, auto_adjust=True)
+            if df.empty:
+                results[ticker] = {"error": f"No history for {ticker}"}
+                continue
+            results[ticker] = [
+                {
+                    "date": str(idx.date()),
+                    "open": round(_fval(row["Open"]), 4),
+                    "high": round(_fval(row["High"]), 4),
+                    "low": round(_fval(row["Low"]), 4),
+                    "close": round(_fval(row["Close"]), 4),
+                    "volume": _ival(row["Volume"]),
+                }
+                for idx, row in df.iterrows()
+            ]
+        except Exception as e:
+            results[ticker] = {"error": str(e)}
+    # Backward-compat: single string → return list directly
+    if isinstance(tickers, str):
+        return json.dumps(results[tickers])
+    return json.dumps(results)
 
 
 @mcp.tool()
