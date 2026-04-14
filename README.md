@@ -9,7 +9,7 @@ Trading agent that simulates buying/selling stocks using **yfinance**, **MCP (Fa
 | Component | Requirement |
 |---|---|
 | Python | 3.12 (venv at `../RAG-CVs/.venv`) |
-| NVIDIA GPU | ≥ 24 GB VRAM (for Qwen 32B AWQ) |
+| NVIDIA GPU | ≥ 16 GB VRAM (for Qwen2.5-14B-Instruct-AWQ) |
 | Docker + nvidia-container-toolkit | for vLLM and Qdrant |
 
 ---
@@ -26,8 +26,8 @@ docker compose up qdrant vllm -d
 curl http://localhost:8000/health
 ```
 
-> **Note:** vLLM downloads `Qwen/Qwen2.5-32B-Instruct-AWQ` (~20 GB) on first start.  
-> Subsequent runs use the cache in the Docker volume `hf_cache`.
+> **Note:** vLLM downloads `Qwen/Qwen2.5-14B-Instruct-AWQ` (~10 GB) on first start.  
+> Subsequent runs use the local HuggingFace cache (`~/.cache/huggingface`).
 
 ### 2. Environment variables
 
@@ -42,7 +42,7 @@ Main variables in `.env`:
 |---|---|---|
 | `VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM endpoint |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
-| `MODEL_NAME` | `Qwen/Qwen2.5-32B-Instruct-AWQ` | Model to use |
+| `MODEL_NAME` | `Qwen/Qwen2.5-14B-Instruct-AWQ` | Model to use |
 | `TICKERS` | `AAPL,TSLA,MSFT,GOOGL,NVDA` | Default stocks |
 | `INITIAL_CAPITAL` | `10000.0` | Initial capital in USD |
 | `YEARS` | `3` | Simulation years |
@@ -74,6 +74,7 @@ python run_simulation.py --help
 | `--years` | 3 | Years of backtest backwards |
 | `--capital` | 10000 | Initial capital in USD |
 | `--interval` | `1wk` | Interval: `1d` `1wk` `1mo` |
+| `--reset` | false | Clear Qdrant collection before simulation |
 | `--log-level` | `WARNING` | Verbosity: `DEBUG` `INFO` `WARNING` |
 
 ---
@@ -112,17 +113,20 @@ flowchart TD
     subgraph langgraph["🤖 LangGraph ReAct Agent (graph.py)"]
         direction LR
         START(["__start__"])
-        AGENT["agent node\nChatOpenAI → vLLM"]
+        AGENT["agent node\n_QwenChatOpenAI → vLLM"]
+        PATCH["XML Patch Layer\n_create_chat_result\nconverts tool_call XML → tool_calls"]
         TOOLNODE["tools node\nMCP tool calls"]
         END(["__end__"])
         START --> AGENT
+        AGENT -.->|raw content| PATCH
+        PATCH -.->|AIMessage tool_calls| AGENT
         AGENT -->|tool_call| TOOLNODE
         TOOLNODE -->|observation| AGENT
         AGENT -->|finish| END
     end
 
     subgraph infra["🐳 Docker Infrastructure"]
-        VLLM["vLLM\nQwen2.5-14B-Instruct-AWQ\nlocalhost:8000/v1\n--enable-auto-tool-choice\n--tool-call-parser hermes"]
+        VLLM["vLLM\nQwen2.5-14B-Instruct-AWQ\nlocalhost:8000/v1\n--enable-auto-tool-choice\n--tool-call-parser qwen3_xml"]
         QDRANT["Qdrant\nlocalhost:6333\ncollection: finance_decisions"]
     end
 
@@ -156,7 +160,8 @@ stateDiagram-v2
     agent --> [*] : LLM emits final response (no tool_calls)
 ```
 
-- **agent node**: calls vLLM via OpenAI-compatible API. If the response contains `tool_calls`, the graph redirects to `tools`.
+- **agent node**: calls vLLM via OpenAI-compatible API through `_QwenChatOpenAI`. If the response contains `tool_calls`, the graph redirects to `tools`.
+- **XML Patch Layer**: `_QwenChatOpenAI._create_chat_result()` intercepts every vLLM response. Qwen2.5 emits tool calls as `<tool_call>JSON</tool_call>` XML inside `content`; the patch extracts them and builds proper LangChain `tool_calls`, making the agent independent of vLLM's `--tool-call-parser` setting.
 - **tools node**: executes each tool call against the MCP SSE server and returns the result to the agent.
 - The cycle continues until the LLM produces a response without `tool_calls`.
 
