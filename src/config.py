@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # ── LLM ──────────────────────────────────────────────────────────────────
     vllm_base_url: str = "http://localhost:8000/v1"
-    model_name: str = "Qwen/Qwen2.5-32B-Instruct-AWQ"
+    model_name: str = "Qwen/Qwen2.5-14B-Instruct-AWQ"
 
     # ── Qdrant ────────────────────────────────────────────────────────────────
     qdrant_url: str = "http://localhost:6333"
