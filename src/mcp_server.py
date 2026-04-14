@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timedelta
 from typing import Any, Union
 
+import pandas as pd
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
@@ -113,17 +114,21 @@ def get_dividends(tickers: Union[str, list], start_date: str, end_date: str) -> 
     end = _cap_end(end_date)
     t = yf.Ticker(ticker)  # type: ignore[possibly-undefined]
     divs = t.dividends
-    if divs.empty:
+    if divs is None or divs.empty:
         return json.dumps([])
-    # Normalize index to YYYY-MM-DD date strings without timezone
-    import pandas as pd
+    # yfinance may return a DataFrame with a "Dividends" column — extract Series
+    if isinstance(divs, pd.DataFrame):
+        col = "Dividends" if "Dividends" in divs.columns else divs.columns[0]
+        divs = divs[col]
+    divs = divs.squeeze()
+    # Normalize index: remove timezone, keep date-only timestamps
     idx_norm = pd.to_datetime(divs.index).tz_localize(None).normalize()
     divs = divs.copy()
     divs.index = idx_norm
     mask = (divs.index >= pd.Timestamp(start_date)) & (divs.index <= pd.Timestamp(end))
     period = divs[mask]
     return json.dumps([
-        {"date": idx.strftime("%Y-%m-%d"), "dividend_per_share": round(float(val), 6)}
+        {"date": pd.Timestamp(idx).strftime("%Y-%m-%d"), "dividend_per_share": round(float(val), 6)}
         for idx, val in period.items()
     ])
 
