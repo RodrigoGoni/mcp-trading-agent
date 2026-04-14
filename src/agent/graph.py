@@ -4,10 +4,14 @@ Builds the LangGraph ReAct agent and integrates it with the MCP server.
 """
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List
+import re
+import uuid
+from typing import Any, Dict, List, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -19,9 +23,93 @@ from src.agent.state import SimulationState
 logger = logging.getLogger(__name__)
 
 
-def build_llm() -> ChatOpenAI:
+# ── Qwen2.5 tool-call XML → LangChain tool_calls patch ──────────────────────
+# Qwen2.5-Instruct emits tool calls as <tool_call>JSON</tool_call> inside the
+# `content` field. When the vLLM parser does not handle this format (e.g. after
+# the removal of the `qwen25` parser), the XML leaks as plain text and LangGraph
+# never executes the tools. This class intercepts the raw ChatResult and converts
+# the XML blocks to proper LangChain ToolCall dicts before LangGraph sees them.
+
+def _extract_xml_tool_calls(content: str) -> tuple[list[dict], str]:
+    """
+    Parses all <tool_call>JSON</tool_call> blocks from *content*.
+    Returns (tool_calls, clean_content) where clean_content has the XML removed.
+    """
+    pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
+    blocks = re.findall(pattern, content, re.DOTALL)
+    tool_calls: list[dict] = []
+    for raw in blocks:
+        try:
+            data = json.loads(raw)
+            tool_calls.append({
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "name": data.get("name", ""),
+                "args": data.get("arguments", data.get("args", {})),
+                "type": "tool_call",
+            })
+        except json.JSONDecodeError:
+            logger.warning("Could not parse tool_call JSON: %s", raw[:200])
+
+    clean = re.sub(pattern, "", content, flags=re.DOTALL).strip()
+    return tool_calls, clean
+
+
+def _patch_ai_message(msg: AIMessage) -> AIMessage:
+    """
+    If an AIMessage has no parsed tool_calls but contains Qwen-style XML,
+    extract the XML and rebuild the message with proper tool_calls.
+    """
+    if msg.tool_calls:          # already parsed correctly by vLLM
+        return msg
+    content = msg.content if isinstance(msg.content, str) else ""
+    if "<tool_call>" not in content:
+        return msg
+
+    tool_calls, clean_content = _extract_xml_tool_calls(content)
+    if not tool_calls:
+        return msg
+
+    logger.debug("XML tool-call patch: extracted %d tool calls from content", len(tool_calls))
+    return AIMessage(
+        content=clean_content,
+        tool_calls=tool_calls,
+        id=msg.id,
+        response_metadata=msg.response_metadata,
+    )
+
+
+class _QwenChatOpenAI(ChatOpenAI):
+    """
+    ChatOpenAI subclass that post-processes every response to convert
+    Qwen2.5's native <tool_call> XML format into proper LangChain tool_calls.
+    This makes the agent independent of vLLM's --tool-call-parser setting.
+    """
+
+    def _create_chat_result(
+        self,
+        response: Any,
+        generation_info: Optional[Dict] = None,
+    ) -> ChatResult:
+        result: ChatResult = super()._create_chat_result(response, generation_info)
+        patched_gens = []
+        for gen in result.generations:
+            if isinstance(gen, ChatGeneration) and isinstance(gen.message, AIMessage):
+                patched_msg = _patch_ai_message(gen.message)
+                patched_gens.append(
+                    ChatGeneration(
+                        message=patched_msg,
+                        generation_info=gen.generation_info,
+                        text=gen.text,
+                    )
+                )
+            else:
+                patched_gens.append(gen)
+        return ChatResult(generations=patched_gens, llm_output=result.llm_output)
+
+
+def build_llm() -> _QwenChatOpenAI:
     """Builds the LLM pointing to the local vLLM server."""
-    return ChatOpenAI(
+    return _QwenChatOpenAI(
         model=settings.model_name,
         base_url=settings.vllm_base_url,
         api_key="not-needed",          # vLLM does not require an API key
