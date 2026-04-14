@@ -1,6 +1,6 @@
 """
 src/agent/prompts.py
-System prompt para el agente de trading.
+System prompt for the trading agent.
 """
 
 TRADING_SYSTEM_PROMPT = """\

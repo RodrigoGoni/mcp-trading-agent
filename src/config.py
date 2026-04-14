@@ -1,7 +1,7 @@
 """
 src/config.py
-Configuración central del Finance Agent.
-Lee desde variables de entorno (archivo .env en la raíz del proyecto).
+Central configuration for the Finance Agent.
+Reads from environment variables (.env file at the project root).
 """
 from __future__ import annotations
 
@@ -28,14 +28,14 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "finance_decisions"
 
-    # ── Simulación ────────────────────────────────────────────────────────────
+    # ── Simulation ────────────────────────────────────────────────────────────
     initial_capital: float = 10_000.0
     years: int = 3
     backtest_interval: str = "1wk"  # "1d" | "1wk" | "1mo"
 
-    # TICKERS se almacena como string separado por comas para compatibilidad
-    # con pydantic-settings (evita el intento de parseo JSON automático).
-    # Accedé siempre vía la propiedad `tickers`.
+    # TICKERS is stored as a comma-separated string for compatibility
+    # with pydantic-settings (avoids automatic JSON parsing attempts).
+    # Always access via the `tickers` property.
     tickers_raw: str = Field(
         default="AAPL,TSLA,MSFT,GOOGL,NVDA",
         alias="tickers",
@@ -44,13 +44,13 @@ class Settings(BaseSettings):
     # ── Embeddings ────────────────────────────────────────────────────────────
     embedding_model: str = "all-MiniLM-L6-v2"
 
-    # ── Gestión de riesgo ─────────────────────────────────────────────────────
-    max_position_pct: float = 0.25   # máx 25 % del portfolio en un solo ticker
-    min_cash_pct: float = 0.05       # mínimo 5 % en cash siempre
+    # ── Risk management ───────────────────────────────────────────────────────
+    max_position_pct: float = 0.25   # max 25% of portfolio in a single ticker
+    min_cash_pct: float = 0.05       # minimum 5% in cash at all times
 
     @property
     def tickers(self) -> List[str]:
-        """Retorna la lista de tickers parseando el string CSV."""
+        """Returns the list of tickers by parsing the CSV string."""
         return [t.strip().upper() for t in self.tickers_raw.split(",") if t.strip()]
 
 

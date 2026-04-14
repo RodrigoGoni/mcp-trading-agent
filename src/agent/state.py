@@ -1,6 +1,6 @@
 """
 src/agent/state.py
-Estado del grafo LangGraph para cada paso de simulación.
+LangGraph state for each simulation step.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing_extensions import TypedDict
 
 class SimulationState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-    current_date: str          # fecha de la iteración actual (YYYY-MM-DD)
-    portfolio_snapshot: Dict[str, Any]  # snapshot del estado del portfolio
-    iteration: int             # número de paso de simulación
-    tickers: List[str]         # universo de acciones disponibles
+    current_date: str          # date of the current iteration (YYYY-MM-DD)
+    portfolio_snapshot: Dict[str, Any]  # snapshot of the portfolio state
+    iteration: int             # simulation step number
+    tickers: List[str]         # universe of available stocks

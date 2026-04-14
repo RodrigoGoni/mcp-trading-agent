@@ -1,94 +1,94 @@
-# Finance Agent — Guía de Usuario
+# Finance Agent — User Guide
 
-Agente de trading que simula compra/venta de acciones usando **yfinance**, **MCP (FastMCP)**, **vLLM (local)** y **Qdrant**.
+Trading agent that simulates buying/selling stocks using **yfinance**, **MCP (FastMCP)**, **vLLM (local)** and **Qdrant**.
 
 ---
 
-## Requisitos
+## Requirements
 
-| Componente | Requisito |
+| Component | Requirement |
 |---|---|
-| Python | 3.12 (venv en `../RAG-CVs/.venv`) |
-| GPU NVIDIA | ≥ 24 GB VRAM (para Qwen 32B AWQ) |
-| Docker + nvidia-container-toolkit | para vLLM y Qdrant |
+| Python | 3.12 (venv at `../RAG-CVs/.venv`) |
+| NVIDIA GPU | ≥ 24 GB VRAM (for Qwen 32B AWQ) |
+| Docker + nvidia-container-toolkit | for vLLM and Qdrant |
 
 ---
 
-## Puesta en marcha
+## Getting Started
 
-### 1. Infraestructura (una sola vez)
+### 1. Infrastructure (once)
 
 ```bash
-# Levantar Qdrant y vLLM
+# Start Qdrant and vLLM
 docker compose up qdrant vllm -d
 
-# Verificar que vLLM esté listo (~10 min la primera vez, descarga el modelo)
+# Verify vLLM is ready (~10 min the first time, downloads the model)
 curl http://localhost:8000/health
 ```
 
-> **Nota:** vLLM descarga `Qwen/Qwen2.5-32B-Instruct-AWQ` (~20 GB) en el primer arranque.  
-> Las siguientes veces usa el caché en el volumen Docker `hf_cache`.
+> **Note:** vLLM downloads `Qwen/Qwen2.5-32B-Instruct-AWQ` (~20 GB) on first start.  
+> Subsequent runs use the cache in the Docker volume `hf_cache`.
 
-### 2. Variables de entorno
+### 2. Environment variables
 
 ```bash
 cp .env.example .env
-# Editar .env si se quieren cambiar defaults (tickers, capital, años, etc.)
+# Edit .env if you want to change defaults (tickers, capital, years, etc.)
 ```
 
-Principales variables en `.env`:
+Main variables in `.env`:
 
-| Variable | Default | Descripción |
+| Variable | Default | Description |
 |---|---|---|
-| `VLLM_BASE_URL` | `http://localhost:8000/v1` | Endpoint de vLLM |
-| `QDRANT_URL` | `http://localhost:6333` | Endpoint de Qdrant |
-| `MODEL_NAME` | `Qwen/Qwen2.5-32B-Instruct-AWQ` | Modelo a usar |
-| `TICKERS` | `AAPL,TSLA,MSFT,GOOGL,NVDA` | Acciones por defecto |
-| `INITIAL_CAPITAL` | `10000.0` | Capital inicial en USD |
-| `YEARS` | `3` | Años de simulación |
-| `BACKTEST_INTERVAL` | `1wk` | Intervalo entre pasos |
+| `VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM endpoint |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint |
+| `MODEL_NAME` | `Qwen/Qwen2.5-32B-Instruct-AWQ` | Model to use |
+| `TICKERS` | `AAPL,TSLA,MSFT,GOOGL,NVDA` | Default stocks |
+| `INITIAL_CAPITAL` | `10000.0` | Initial capital in USD |
+| `YEARS` | `3` | Simulation years |
+| `BACKTEST_INTERVAL` | `1wk` | Interval between steps |
 
 ---
 
-## Ejecutar una simulación
+## Running a simulation
 
 ```bash
-# Activar el venv
+# Activate the venv
 source /home/rodrigo/Desktop/maestria/RAG-CVs/.venv/bin/activate
 
-# Simulación básica (1 año, mensual, 3 tickers)
+# Basic simulation (1 year, monthly, 3 tickers)
 python run_simulation.py --years 1 --interval 1mo --tickers AAPL MSFT NVDA
 
-# Simulación completa (3 años, semanal, 5 tickers, 50k de capital)
+# Full simulation (3 years, weekly, 5 tickers, 50k capital)
 python run_simulation.py --years 3 --interval 1wk --tickers AAPL TSLA MSFT GOOGL NVDA --capital 50000
 
-# Opciones disponibles
+# Show available options
 python run_simulation.py --help
 ```
 
-### Parámetros CLI
+### CLI Parameters
 
-| Argumento | Default | Descripción |
+| Argument | Default | Description |
 |---|---|---|
-| `--tickers` | (del .env) | Lista de tickers, ej: `AAPL MSFT NVDA` |
-| `--years` | 3 | Años de backtest hacia atrás |
-| `--capital` | 10000 | Capital inicial en USD |
-| `--interval` | `1wk` | Intervalo: `1d` `1wk` `1mo` |
-| `--log-level` | `WARNING` | Verbosidad: `DEBUG` `INFO` `WARNING` |
+| `--tickers` | (from .env) | List of tickers, e.g. `AAPL MSFT NVDA` |
+| `--years` | 3 | Years of backtest backwards |
+| `--capital` | 10000 | Initial capital in USD |
+| `--interval` | `1wk` | Interval: `1d` `1wk` `1mo` |
+| `--log-level` | `WARNING` | Verbosity: `DEBUG` `INFO` `WARNING` |
 
 ---
 
-## Intervalos disponibles
+## Available intervals
 
-| Valor | Descripción | Pasos en 1 año |
+| Value | Description | Steps in 1 year |
 |---|---|---|
-| `1d` | Diario | ~252 |
-| `1wk` | Semanal | ~52 |
-| `1mo` | Mensual | ~12 |
+| `1d` | Daily | ~252 |
+| `1wk` | Weekly | ~52 |
+| `1mo` | Monthly | ~12 |
 
 ---
 
-## Arquitectura
+## Architecture
 
 ```mermaid
 flowchart TD
@@ -144,43 +144,43 @@ flowchart TD
     EMBED -->|384-dim vector| QDRANT
 ```
 
-### LangGraph — Grafo interno del agente ReAct
+### LangGraph — Internal ReAct agent graph
 
-El agente sigue el patrón **ReAct** (Reason + Act) implementado con `create_react_agent` de `langgraph-prebuilt`:
+The agent follows the **ReAct** pattern (Reason + Act) implemented with `create_react_agent` from `langgraph-prebuilt`:
 
 ```mermaid
 stateDiagram-v2
     [*] --> agent : SystemMessage + HumanMessage
-    agent --> tools : LLM emite tool_call(s)
-    tools --> agent : ToolMessage con resultado JSON
-    agent --> [*] : LLM emite respuesta final (sin tool_calls)
+    agent --> tools : LLM emits tool_call(s)
+    tools --> agent : ToolMessage with JSON result
+    agent --> [*] : LLM emits final response (no tool_calls)
 ```
 
-- **agent node**: llama a vLLM vía OpenAI-compatible API. Si la respuesta contiene `tool_calls`, el grafo redirige a `tools`.
-- **tools node**: ejecuta cada tool call contra el MCP server SSE y devuelve el resultado al agente.
-- El ciclo continúa hasta que el LLM produce una respuesta sin `tool_calls`.
+- **agent node**: calls vLLM via OpenAI-compatible API. If the response contains `tool_calls`, the graph redirects to `tools`.
+- **tools node**: executes each tool call against the MCP SSE server and returns the result to the agent.
+- The cycle continues until the LLM produces a response without `tool_calls`.
 
-### Herramientas MCP disponibles para el agente
+### MCP tools available to the agent
 
-| Tool | Descripción |
+| Tool | Description |
 |---|---|
-| `get_price` | Precio actual de un ticker |
-| `get_history` | Historial OHLCV (N semanas) |
-| `get_dividends` | Dividendos históricos |
-| `get_company_info` | Info fundamental (sector, P/E, etc.) |
-| `get_portfolio_status` | Estado actual del portfolio |
-| `execute_buy` | Comprar N acciones |
-| `execute_sell` | Vender N acciones |
+| `get_price` | Current price of a ticker |
+| `get_history` | OHLCV history (N weeks) |
+| `get_dividends` | Historical dividends |
+| `get_company_info` | Fundamental info (sector, P/E, etc.) |
+| `get_portfolio_status` | Current portfolio state |
+| `execute_buy` | Buy N shares |
+| `execute_sell` | Sell N shares |
 
 ---
 
-## Verificar decisiones en Qdrant
+## Check decisions in Qdrant
 
 ```bash
-# Dashboard web de Qdrant
+# Qdrant web dashboard
 open http://localhost:6333/dashboard
 
-# Colección con el historial de decisiones
+# Collection with the decision history
 curl http://localhost:6333/collections/finance_decisions
 ```
 
@@ -188,33 +188,33 @@ curl http://localhost:6333/collections/finance_decisions
 
 ## Troubleshooting
 
-### vLLM no responde
+### vLLM not responding
 ```bash
 docker logs rag_vllm --tail 20
 curl http://localhost:8000/health
 ```
 
-### Puerto del MCP server ocupado
+### MCP server port busy
 ```bash
-fuser -k 18765/tcp   # o el puerto que indique el error
+fuser -k 18765/tcp   # or the port shown in the error
 ```
 
 ### Context length exceeded (400)
-Reducir `max_tokens` en `src/agent/graph.py` o usar un modelo con más contexto en `docker-compose.yml`.
+Reduce `max_tokens` in `src/agent/graph.py` or use a model with more context in `docker-compose.yml`.
 
-### Qdrant collection no existe
-Se crea automáticamente en el primer run. Si hay errores de esquema:
+### Qdrant collection does not exist
+It is created automatically on the first run. If there are schema errors:
 ```bash
 curl -X DELETE http://localhost:6333/collections/finance_decisions
 ```
-y volver a ejecutar.
+and run again.
 
 ---
 
-## Reiniciar infraestructura
+## Restart infrastructure
 
 ```bash
-docker compose restart vllm    # reiniciar solo vLLM
-docker compose down            # bajar todo (conserva volúmenes)
-docker compose up qdrant vllm -d  # volver a levantar
+docker compose restart vllm       # restart only vLLM
+docker compose down               # stop everything (volumes preserved)
+docker compose up qdrant vllm -d  # bring back up
 ```

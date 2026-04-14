@@ -1,12 +1,12 @@
 """
 src/mcp_server.py
-Servidor MCP (FastMCP) que expone herramientas de yfinance al agente.
+MCP server (FastMCP) that exposes yfinance tools to the agent.
 
-Uso (stdio transport — arrancado como subprocess desde run_simulation.py):
+Usage (stdio transport — started as subprocess from run_simulation.py):
     python -m src.mcp_server
 
-Las herramientas respetan la fecha actual de la simulación para evitar
-look-ahead bias: nunca retornan datos futuros al `current_date` pasado.
+The tools respect the current simulation date to avoid
+look-ahead bias: they never return data beyond the `current_date` passed.
 """
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from typing import Any, Union
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
-# ── Estado compartido del portfolio ─────────────────────────────────────────
-# El backtest inyecta el portfolio real vía stdin JSON al arrancar el servidor.
-# Durante las llamadas, el servidor muta este estado y lo persiste en memoria.
+# ── Shared portfolio state ────────────────────────────────────────────────────────────
+# The backtest injects the real portfolio via stdin JSON when starting the server.
+# During calls, the server mutates this state and persists it in memory.
 from src.models.portfolio import Portfolio
 from src.config import settings
 
@@ -34,7 +34,7 @@ _current_date: str = ""
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _cap_end(end_date: str) -> str:
-    """Asegura que end_date no supere la fecha actual real."""
+    """Ensures end_date does not exceed today's actual date."""
     today = datetime.today().strftime("%Y-%m-%d")
     return min(end_date, today)
 
@@ -44,12 +44,12 @@ def _to_date(s: str) -> datetime:
 
 
 def _fval(v) -> float:
-    """float seguro: maneja Series de un elemento que devuelve yfinance."""
+    """Safe float: handles single-element Series returned by yfinance."""
     return float(v.iloc[0]) if hasattr(v, "iloc") else float(v)
 
 
 def _ival(v) -> int:
-    """int seguro: maneja Series de un elemento que devuelve yfinance."""
+    """Safe int: handles single-element Series returned by yfinance."""
     return int(v.iloc[0]) if hasattr(v, "iloc") else int(v)
 
 
@@ -115,7 +115,7 @@ def get_dividends(tickers: Union[str, list], start_date: str, end_date: str) -> 
     divs = t.dividends
     if divs.empty:
         return json.dumps([])
-    # Normalizar índice a fechas string YYYY-MM-DD sin timezone
+    # Normalize index to YYYY-MM-DD date strings without timezone
     import pandas as pd
     idx_norm = pd.to_datetime(divs.index).tz_localize(None).normalize()
     divs = divs.copy()
@@ -152,8 +152,8 @@ def get_company_info(tickers: Union[str, list]) -> str:
 
 @mcp.tool()
 def get_portfolio_status() -> str:
-    """Retorna el estado actual del portfolio: cash, posiciones abiertas y valor total.
-    No requiere parámetros."""
+    """Returns the current portfolio state: cash, open positions and total value.
+    No parameters required."""
     # Reunir precios actuales de las posiciones abiertas
     prices: dict[str, float] = {}
     for ticker in list(_portfolio.positions.keys()):
@@ -181,10 +181,10 @@ def execute_buy(tickers: Union[str, list], shares: float, rationale: str = "") -
     ok = _portfolio.buy(ticker, shares, price, dt, rationale)
     if ok:
         trade = _portfolio.trades[-1]
-        return json.dumps({"success": True, "message": f"Comprado {shares} {ticker} a ${price:.2f}",
+        return json.dumps({"success": True, "message": f"Bought {shares} {ticker} at ${price:.2f}",
                            "trade": trade.to_dict()})
     return json.dumps({"success": False,
-                       "message": f"Fondos insuficientes. Cash disponible: ${_portfolio.cash:.2f}, costo: ${shares*price:.2f}"})
+                       "message": f"Insufficient funds. Available cash: ${_portfolio.cash:.2f}, cost: ${shares*price:.2f}"})
 
 
 @mcp.tool()
@@ -201,26 +201,26 @@ def execute_sell(tickers: Union[str, list], shares: float, rationale: str = "") 
         return json.dumps({"success": False, "message": price_data["error"]})
     price = price_data["close"]
     dt = datetime.strptime(price_data["date"], "%Y-%m-%d").date()
-    # Si shares > posición real, sell() venderá todo
+    # If shares > actual position, sell() will sell everything
     ok = _portfolio.sell(ticker, shares, price, dt, rationale)
     if ok:
         trade = _portfolio.trades[-1]
         return json.dumps({"success": True,
-                           "message": f"Vendido {trade.shares} {ticker} a ${price:.2f}",
+                           "message": f"Sold {trade.shares} {ticker} at ${price:.2f}",
                            "trade": trade.to_dict()})
-    return json.dumps({"success": False, "message": "No se pudo ejecutar la venta"})
+    return json.dumps({"success": False, "message": "Could not execute the sale"})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def set_portfolio(portfolio: Portfolio) -> None:
-    """Inyecta el portfolio desde el proceso padre (backtest)."""
+    """Injects the portfolio from the parent process (backtest)."""
     global _portfolio
     _portfolio = portfolio
 
 
 def set_current_date(date_str: str) -> None:
-    """Actualiza la fecha actual de simulación."""
+    """Updates the current simulation date."""
     global _current_date
     _current_date = date_str
 

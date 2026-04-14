@@ -1,7 +1,7 @@
 """
 src/memory/qdrant_store.py
-Almacena y recupera decisiones del agente usando Qdrant como vector store.
-Usa sentence-transformers para los embeddings (ya instalado en el venv).
+Stores and retrieves agent decisions using Qdrant as a vector store.
+Uses sentence-transformers for embeddings (already installed in the venv).
 """
 from __future__ import annotations
 
@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 class DecisionStore:
     """
-    Almacena decisiones del agente en Qdrant para análisis posterior
-    y para permitir que el agente consulte decisiones históricas similares.
+    Stores agent decisions in Qdrant for later analysis
+    and to allow the agent to query similar historical decisions.
     """
 
-    VECTOR_DIM = 384  # all-MiniLM-L6-v2 produce vectores de 384 dims
+    VECTOR_DIM = 384  # all-MiniLM-L6-v2 produces 384-dim vectors
 
     def __init__(self) -> None:
         self.client = QdrantClient(url=settings.qdrant_url)
@@ -41,16 +41,16 @@ class DecisionStore:
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
-        """Crea la colección si no existe."""
+        """Creates the collection if it does not exist."""
         existing = [c.name for c in self.client.get_collections().collections]
         if self.collection not in existing:
             self.client.create_collection(
                 collection_name=self.collection,
                 vectors_config=VectorParams(size=self.VECTOR_DIM, distance=Distance.COSINE),
             )
-            logger.info(f"Colección '{self.collection}' creada en Qdrant.")
+            logger.info(f"Collection '{self.collection}' created in Qdrant.")
         else:
-            logger.debug(f"Colección '{self.collection}' ya existe.")
+            logger.debug(f"Collection '{self.collection}' already exists.")
 
     def _embed(self, text: str) -> List[float]:
         return self.encoder.encode(text, normalize_embeddings=True).tolist()
@@ -64,15 +64,15 @@ class DecisionStore:
         portfolio_snapshot: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
-        Guarda la decisión del agente para una fecha dada.
-        Retorna el ID del punto guardado.
+        Saves the agent's decision for a given date.
+        Returns the ID of the saved point.
         """
         point_id = str(uuid.uuid4())
         text_to_embed = (
-            f"Fecha: {date}. "
+            f"Date: {date}. "
             f"Portfolio: ${portfolio_value:,.2f}. "
             f"Trades: {trades_executed}. "
-            f"Resumen: {agent_summary}"
+            f"Summary: {agent_summary}"
         )
         vector = self._embed(text_to_embed)
         payload = {
@@ -87,13 +87,13 @@ class DecisionStore:
             collection_name=self.collection,
             points=[PointStruct(id=point_id, vector=vector, payload=payload)],
         )
-        logger.debug(f"Decisión guardada en Qdrant: {point_id} ({date})")
+        logger.debug(f"Decision saved in Qdrant: {point_id} ({date})")
         return point_id
 
     def get_similar_decisions(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """
-        Busca decisiones históricas similares a la query dada.
-        Útil para que el agente consulte contexto de situaciones pasadas.
+        Searches for historical decisions similar to the given query.
+        Useful for the agent to consult context from past situations.
         """
         vector = self._embed(query)
         results = self.client.search(
@@ -114,7 +114,7 @@ class DecisionStore:
         ]
 
     def get_all_decisions(self) -> List[Dict[str, Any]]:
-        """Retorna todas las decisiones almacenadas, ordenadas por fecha."""
+        """Returns all stored decisions, sorted by date."""
         results, _ = self.client.scroll(
             collection_name=self.collection,
             limit=10_000,

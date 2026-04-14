@@ -1,12 +1,12 @@
 """
 src/simulation/backtest.py
-Motor de backtest semanal/mensual.
+Weekly/monthly backtest engine.
 
-Arquitectura:
-- El servidor MCP (FastMCP + SSE) se inicia como tarea asyncio en el mismo proceso.
-- El portfolio es un objeto compartido en memoria entre el backtest y el servidor MCP.
-- En cada paso: aplica dividendos → invoca el agente → guarda decisión en Qdrant.
-- Al finalizar: imprime tabla de resultados con `rich`.
+Architecture:
+- The MCP server (FastMCP + SSE) is started as an asyncio task in the same process.
+- The portfolio is a shared in-memory object between the backtest and the MCP server.
+- Each step: apply dividends → invoke agent → save decision to Qdrant.
+- At the end: prints results table using `rich`.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ console = Console()
 
 
 def _find_free_port(start: int = 18_765) -> int:
-    """Busca un puerto TCP libre empezando desde `start`."""
+    """Searches for a free TCP port starting from `start`."""
     import socket
     for port in range(start, start + 100):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -42,15 +42,15 @@ def _find_free_port(start: int = 18_765) -> int:
                 return port
             except OSError:
                 continue
-    raise RuntimeError("No se encontró un puerto libre entre 18765 y 18865")
+    raise RuntimeError("No free port found between 18765 and 18865")
 
 
-# ── Generación de fechas ──────────────────────────────────────────────────────
+# ── Date generation ──────────────────────────────────────────────────────────────
 
 def _generate_dates(years: int, interval: str) -> List[date]:
     """
-    Genera lista de fechas desde `hoy - years` hasta ayer,
-    con la granularidad especificada.
+    Generates list of dates from `today - years` to yesterday,
+    with the specified granularity.
     """
     end = date.today() - timedelta(days=1)
     start = date(end.year - years, end.month, end.day)
@@ -63,13 +63,13 @@ def _generate_dates(years: int, interval: str) -> List[date]:
     elif interval == "1wk":
         step = timedelta(weeks=1)
     elif interval == "1mo":
-        # aprox 30 días
+        # approx 30 days
         step = timedelta(days=30)
     else:
         step = timedelta(weeks=1)
 
     while cursor <= end:
-        # Saltar fines de semana para intervalos diarios
+        # Skip weekends for daily intervals
         if interval == "1d" and cursor.weekday() >= 5:
             cursor += timedelta(days=1)
             continue
@@ -79,7 +79,7 @@ def _generate_dates(years: int, interval: str) -> List[date]:
     return dates
 
 
-# ── Dividendos ────────────────────────────────────────────────────────────────
+# ── Dividends ──────────────────────────────────────────────────────────────────
 
 def _apply_period_dividends(
     portfolio: Portfolio,
@@ -87,7 +87,7 @@ def _apply_period_dividends(
     start: date,
     end: date,
 ) -> Dict[str, float]:
-    """Aplica dividendos del período a las posiciones abiertas. Retorna dict {ticker: amount}."""
+    """Applies period dividends to open positions. Returns dict {ticker: amount}."""
     applied: Dict[str, float] = {}
     for ticker in tickers:
         if ticker not in portfolio.positions:
@@ -103,14 +103,14 @@ def _apply_period_dividends(
                 amount = portfolio.apply_dividends(ticker, float(dps), end)
                 applied[ticker] = applied.get(ticker, 0.0) + amount
         except Exception as e:
-            logger.warning(f"Error obteniendo dividendos para {ticker}: {e}")
+            logger.warning(f"Error fetching dividends for {ticker}: {e}")
     return applied
 
 
-# ── Servidor MCP in-process ───────────────────────────────────────────────────
+# ── In-process MCP server ──────────────────────────────────────────────────────────────
 
 async def _start_mcp_server() -> tuple[uvicorn.Server, int]:
-    """Arranca el servidor FastMCP con SSE transport en background. Retorna (server, port)."""
+    """Starts the FastMCP server with SSE transport in the background. Returns (server, port)."""
     port = _find_free_port()
     sse_app = mcp_module.mcp.sse_app()
     config = uvicorn.Config(
@@ -122,16 +122,16 @@ async def _start_mcp_server() -> tuple[uvicorn.Server, int]:
     )
     server = uvicorn.Server(config)
     asyncio.create_task(server.serve())
-    # Esperar que el servidor esté listo
+    # Wait for the server to be ready
     for _ in range(20):
         await asyncio.sleep(0.3)
         if server.started:
             break
-    logger.info(f"Servidor MCP SSE escuchando en http://127.0.0.1:{port}/sse")
+    logger.info(f"MCP SSE server listening at http://127.0.0.1:{port}/sse")
     return server, port
 
 
-# ── Backtest principal ────────────────────────────────────────────────────────
+# ── Main backtest ────────────────────────────────────────────────────────────────
 
 async def run(
     initial_capital: float,
@@ -140,34 +140,34 @@ async def run(
     interval: str = "1wk",
 ) -> None:
     """
-    Ejecuta el backtest completo.
+    Runs the complete backtest.
 
-    Parámetros
+    Parameters
     ----------
-    initial_capital : capital inicial en USD
-    years           : número de años de simulación hacia atrás
-    tickers         : lista de tickers disponibles
-    interval        : granularidad ("1d", "1wk", "1mo")
+    initial_capital : initial capital in USD
+    years           : number of years to simulate backwards
+    tickers         : list of available tickers
+    interval        : granularity ("1d", "1wk", "1mo")
     """
-    console.rule("[bold green]Finance Agent — Backtest Iniciado")
-    console.print(f"Capital inicial: [bold]{initial_capital:,.2f} USD[/bold]")
-    console.print(f"Período: {years} año(s) | Intervalo: {interval}")
+    console.rule("[bold green]Finance Agent — Backtest Started")
+    console.print(f"Initial capital: [bold]{initial_capital:,.2f} USD[/bold]")
+    console.print(f"Period: {years} year(s) | Interval: {interval}")
     console.print(f"Tickers: [cyan]{', '.join(tickers)}[/cyan]\n")
 
-    # Inicializar portfolio y memoria
+    # Initialize portfolio and memory
     portfolio = Portfolio(cash=initial_capital)
     store = DecisionStore()
 
-    # Inyectar portfolio en el servidor MCP (mismo proceso)
+    # Inject portfolio into the MCP server (same process)
     mcp_module.set_portfolio(portfolio)
 
-    # Arrancar servidor MCP SSE
+    # Start MCP SSE server
     mcp_server, mcp_port = await _start_mcp_server()
 
-    # Generar fechas de simulación
+    # Generate simulation dates
     simulation_dates = _generate_dates(years, interval)
     total_steps = len(simulation_dates)
-    console.print(f"Pasos de simulación: [bold]{total_steps}[/bold]\n")
+    console.print(f"Simulation steps: [bold]{total_steps}[/bold]\n")
 
     initial_value = initial_capital
     prev_date = simulation_dates[0] if simulation_dates else date.today()
@@ -192,13 +192,13 @@ async def run(
 
         console.rule(f"[dim]Paso {i}/{total_steps} — {date_str}")
 
-        # 1. Aplicar dividendos del período
+        # 1. Apply dividends for the period
         dividends = _apply_period_dividends(portfolio, tickers, prev_date, current_dt)
         if dividends:
             for t, amt in dividends.items():
-                console.print(f"  [green]Dividendo:[/green] {t} +${amt:.2f}")
+                console.print(f"  [green]Dividend:[/green] {t} +${amt:.2f}")
 
-        # 2. Obtener snapshot del portfolio antes del paso
+        # 2. Get portfolio snapshot before the step
         prices_now: Dict[str, float] = {}
         for ticker in list(portfolio.positions.keys()):
             try:
@@ -214,7 +214,7 @@ async def run(
         console.print(f"  Portfolio: [bold]${current_value:,.2f}[/bold] "
                       f"(cash: ${portfolio.cash:,.2f})")
 
-        # 3. Invocar el agente
+        # 3. Invoke the agent
         prev_trade_count = len(portfolio.trades)
         try:
             result = await run_agent_step(
@@ -224,7 +224,7 @@ async def run(
                 tickers=tickers,
                 iteration=i,
             )
-            # Extraer el último mensaje del agente como resumen
+            # Extract the last agent message as summary
             last_msg = result["messages"][-1]
             agent_summary = getattr(last_msg, "content", str(last_msg))
             if isinstance(agent_summary, list):
@@ -234,10 +234,10 @@ async def run(
                 )
             agent_summary = str(agent_summary)[:800]
         except Exception as e:
-            logger.error(f"Error en paso {i} ({date_str}): {e}")
+            logger.error(f"Error in step {i} ({date_str}): {e}")
             agent_summary = f"Error: {e}"
 
-        # 4. Trades ejecutados en este paso
+        # 4. Trades executed in this step
         new_trades = portfolio.trades[prev_trade_count:]
         if new_trades:
             for tr in new_trades:
@@ -249,9 +249,9 @@ async def run(
                 if tr.rationale:
                     console.print(f"    [dim]{tr.rationale[:120]}[/dim]")
         else:
-            console.print("  [dim]HOLD — sin operaciones[/dim]")
+            console.print("  [dim]HOLD — no trades[/dim]")
 
-        # 5. Guardar decisión en Qdrant
+        # 5. Save decision to Qdrant
         try:
             updated_prices: Dict[str, float] = {}
             for ticker in portfolio.positions:
@@ -271,14 +271,14 @@ async def run(
                 portfolio_snapshot=portfolio.snapshot(updated_prices),
             )
         except Exception as e:
-            logger.warning(f"No se pudo guardar decisión en Qdrant: {e}")
+            logger.warning(f"Could not save decision to Qdrant: {e}")
 
         prev_date = current_dt
 
-    # ── Resultados finales ────────────────────────────────────────────────────
-    console.rule("[bold green]Resultados Finales")
+    # ── Final results ──────────────────────────────────────────────────────────────
+    console.rule("[bold green]Final Results")
 
-    # Obtener precios finales
+    # Get final prices
     final_prices: Dict[str, float] = {}
     for ticker in portfolio.positions:
         try:
@@ -291,27 +291,27 @@ async def run(
     final_value = portfolio.total_value(final_prices)
     roi = ((final_value - initial_value) / initial_value) * 100
 
-    # Tabla de performance
-    perf_table = Table(title="Performance del Portfolio", box=box.ROUNDED)
-    perf_table.add_column("Métrica", style="cyan")
-    perf_table.add_column("Valor", style="bold")
-    perf_table.add_row("Capital Inicial", f"${initial_value:,.2f}")
-    perf_table.add_row("Valor Final", f"${final_value:,.2f}")
-    perf_table.add_row("ROI Total", f"{roi:+.2f}%")
-    perf_table.add_row("Dividendos Recibidos", f"${portfolio.dividends_received:,.2f}")
-    perf_table.add_row("Trades Ejecutados", str(len(portfolio.trades)))
-    perf_table.add_row("Cash Restante", f"${portfolio.cash:,.2f}")
+    # Performance table
+    perf_table = Table(title="Portfolio Performance", box=box.ROUNDED)
+    perf_table.add_column("Metric", style="cyan")
+    perf_table.add_column("Value", style="bold")
+    perf_table.add_row("Initial Capital", f"${initial_value:,.2f}")
+    perf_table.add_row("Final Value", f"${final_value:,.2f}")
+    perf_table.add_row("Total ROI", f"{roi:+.2f}%")
+    perf_table.add_row("Dividends Received", f"${portfolio.dividends_received:,.2f}")
+    perf_table.add_row("Trades Executed", str(len(portfolio.trades)))
+    perf_table.add_row("Remaining Cash", f"${portfolio.cash:,.2f}")
     console.print(perf_table)
 
-    # Tabla de posiciones abiertas
+    # Open positions table
     if portfolio.positions:
-        pos_table = Table(title="Posiciones Abiertas", box=box.SIMPLE)
+        pos_table = Table(title="Open Positions", box=box.SIMPLE)
         pos_table.add_column("Ticker")
-        pos_table.add_column("Acciones", justify="right")
-        pos_table.add_column("Costo Prom.", justify="right")
-        pos_table.add_column("Precio Actual", justify="right")
-        pos_table.add_column("Valor", justify="right")
-        pos_table.add_column("PnL no realizado", justify="right")
+        pos_table.add_column("Shares", justify="right")
+        pos_table.add_column("Avg Cost", justify="right")
+        pos_table.add_column("Current Price", justify="right")
+        pos_table.add_column("Value", justify="right")
+        pos_table.add_column("Unrealized PnL", justify="right")
         for ticker, pos in portfolio.positions.items():
             cp = final_prices.get(ticker, pos.avg_cost)
             pnl = pos.unrealized_pnl(cp)
@@ -326,14 +326,14 @@ async def run(
             )
         console.print(pos_table)
 
-    # Tabla de trades
+    # Trades table
     if portfolio.trades:
-        trades_table = Table(title=f"Historial de Trades ({len(portfolio.trades)} operaciones)", box=box.SIMPLE)
-        trades_table.add_column("Fecha")
-        trades_table.add_column("Acción")
+        trades_table = Table(title=f"Trade History ({len(portfolio.trades)} operations)", box=box.SIMPLE)
+        trades_table.add_column("Date")
+        trades_table.add_column("Action")
         trades_table.add_column("Ticker")
-        trades_table.add_column("Acciones", justify="right")
-        trades_table.add_column("Precio", justify="right")
+        trades_table.add_column("Shares", justify="right")
+        trades_table.add_column("Price", justify="right")
         trades_table.add_column("Total", justify="right")
         for tr in portfolio.trades:
             color = "green" if tr.action == "BUY" else "red"
@@ -347,7 +347,7 @@ async def run(
             )
         console.print(trades_table)
 
-    console.print(f"\n[bold]Decisiones guardadas en Qdrant:[/bold] colección '{settings.qdrant_collection}'")
+    console.print(f"\n[bold]Decisions saved in Qdrant:[/bold] collection '{settings.qdrant_collection}'")
     console.rule()
 
     # Parar el servidor MCP

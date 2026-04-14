@@ -1,6 +1,6 @@
 """
 src/models/portfolio.py
-Modelos de dominio: Position, Trade, Portfolio.
+Domain models: Position, Trade, Portfolio.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 class Position:
     ticker: str
     shares: float
-    avg_cost: float  # precio promedio de compra por acción
+    avg_cost: float  # average purchase price per share
 
     @property
     def cost_basis(self) -> float:
@@ -41,7 +41,7 @@ class Trade:
     action: str          # "BUY" | "SELL"
     shares: float
     price: float
-    total: float         # shares * price (positivo = gasto, negativo = ingreso)
+    total: float         # shares * price (positive = expense, negative = income)
     rationale: str = ""
 
     def to_dict(self) -> dict:
@@ -63,11 +63,11 @@ class Portfolio:
     trades: List[Trade] = field(default_factory=list)
     dividends_received: float = 0.0
 
-    # ── Operaciones ────────────────────────────────────────────────────────────
+    # ── Operations ──────────────────────────────────────────────────────────────────
 
     def buy(self, ticker: str, shares: float, price: float, dt: date, rationale: str = "") -> bool:
-        """Intenta comprar `shares` acciones de `ticker` al precio `price`.
-        Retorna True si la operación se ejecutó, False si no hay fondos suficientes."""
+        """Tries to buy `shares` shares of `ticker` at `price`.
+        Returns True if the operation was executed, False if insufficient funds."""
         cost = shares * price
         if cost > self.cash:
             return False
@@ -84,13 +84,13 @@ class Portfolio:
         return True
 
     def sell(self, ticker: str, shares: float, price: float, dt: date, rationale: str = "") -> bool:
-        """Intenta vender `shares` acciones de `ticker` al precio `price`.
-        Retorna True si la operación se ejecutó, False si no hay posición suficiente."""
+        """Tries to sell `shares` shares of `ticker` at `price`.
+        Returns True if the operation was executed, False if position is insufficient."""
         if ticker not in self.positions:
             return False
         pos = self.positions[ticker]
         if shares > pos.shares:
-            shares = pos.shares  # vender todo lo disponible
+            shares = pos.shares  # sell everything available
         proceeds = shares * price
         self.cash += proceeds
         pos.shares -= shares
@@ -101,8 +101,8 @@ class Portfolio:
         return True
 
     def apply_dividends(self, ticker: str, dividend_per_share: float, dt: date) -> float:
-        """Aplica dividendos para un ticker si hay posición abierta.
-        Retorna el total de dividendos recibidos."""
+        """Applies dividends for a ticker if there is an open position.
+        Returns the total dividends received."""
         if ticker not in self.positions:
             return 0.0
         amount = self.positions[ticker].shares * dividend_per_share
@@ -110,10 +110,10 @@ class Portfolio:
         self.dividends_received += amount
         return amount
 
-    # ── Estado ────────────────────────────────────────────────────────────────
+    # ── State ──────────────────────────────────────────────────────────────────
 
     def total_value(self, prices: Dict[str, float]) -> float:
-        """Valor total del portfolio (cash + posiciones a precio de mercado)."""
+        """Total portfolio value (cash + positions at market price)."""
         equity = sum(
             pos.shares * prices.get(ticker, pos.avg_cost)
             for ticker, pos in self.positions.items()
@@ -127,7 +127,7 @@ class Portfolio:
         )
 
     def snapshot(self, prices: Optional[Dict[str, float]] = None) -> dict:
-        """Serialización completa del estado actual."""
+        """Full serialization of the current state."""
         prices = prices or {}
         total = self.total_value(prices)
         return {
