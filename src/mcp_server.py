@@ -172,6 +172,68 @@ def get_company_info(tickers: Union[str, list]) -> str:
     })
 
 
+@mcp.tool()
+def get_earnings_calendar(tickers: Union[str, list]) -> str:
+    """Get earnings calendar for ONE ticker: last 4 past earnings dates and next upcoming date.
+    CRITICAL for risk management: if earnings_risk=True, DO NOT BUY — high volatility expected.
+    Args: tickers (str, e.g. 'AAPL').
+    Returns JSON {ticker, last_earnings:[{date,reported_eps,estimate_eps,surprise_pct}],
+                  next_earnings_date, days_to_earnings, earnings_risk (True if <=7 days away)}"""
+    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    current = _current_date or datetime.today().strftime("%Y-%m-%d")
+    current_dt = datetime.strptime(current, "%Y-%m-%d")
+    try:
+        t = yf.Ticker(ticker)
+        ed = t.earnings_dates  # DataFrame indexed by Earnings Date (tz-aware)
+        if ed is None or (hasattr(ed, "empty") and ed.empty):
+            return json.dumps({"ticker": ticker, "next_earnings_date": None,
+                               "days_to_earnings": None, "earnings_risk": False,
+                               "last_earnings": [], "note": "No earnings data available"})
+        ed = ed.copy()
+        ed.index = pd.to_datetime(ed.index).tz_localize(None)  # strip tz
+
+        past    = ed[ed.index < current_dt].sort_index(ascending=False).head(4)
+        upcoming = ed[ed.index >= current_dt].sort_index(ascending=True).head(1)
+
+        def _row(idx, row) -> dict:
+            entry: dict = {"date": idx.strftime("%Y-%m-%d")}
+            for col, key in [("Reported EPS", "reported_eps"),
+                             ("EPS Estimate", "estimate_eps"),
+                             ("Surprise(%)",  "surprise_pct")]:
+                if col in row.index and not pd.isna(row[col]):
+                    entry[key] = round(float(row[col]), 4)
+            return entry
+
+        past_list = [_row(idx, row) for idx, row in past.iterrows()]
+
+        next_date: str | None = None
+        days_to_earnings: int | None = None
+        earnings_risk = False
+        warning: str | None = None
+
+        if not upcoming.empty:
+            nxt = upcoming.index[0]
+            next_date = nxt.strftime("%Y-%m-%d")
+            days_to_earnings = (nxt - current_dt).days
+            earnings_risk = 0 <= days_to_earnings <= 7
+            if earnings_risk:
+                warning = (f"⚠️ {ticker} reports earnings in {days_to_earnings} day(s) "
+                           f"({next_date}). HIGH VOLATILITY RISK. DO NOT BUY. "
+                           f"Consider selling existing position.")
+
+        return json.dumps({
+            "ticker": ticker,
+            "last_earnings": past_list,
+            "next_earnings_date": next_date,
+            "days_to_earnings": days_to_earnings,
+            "earnings_risk": earnings_risk,
+            "warning": warning,
+        })
+    except Exception as e:
+        return json.dumps({"ticker": ticker, "error": str(e),
+                           "earnings_risk": False, "next_earnings_date": None})
+
+
 # ── Tools del portfolio ────────────────────────────────────────────────────────
 
 @mcp.tool()
