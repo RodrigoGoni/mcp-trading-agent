@@ -22,6 +22,7 @@ import pandas as pd
 import yfinance as yf
 import uvicorn
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 from rich.console import Console
 from rich.table import Table
@@ -32,6 +33,7 @@ from src.agent.graph import build_llm, build_agent_input
 from src.config import settings
 from src.memory.qdrant_store import DecisionStore
 from src.models.portfolio import Portfolio
+from src.storage.runs_store import RunsStore
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -88,7 +90,7 @@ async def _run_agent_streaming(
     Runs the agent with astream() so every tool call and result is visible
     in the console in real time. Returns the final state dict.
     """
-    from langchain_core.messages import AIMessage, ToolMessage
+    
 
     all_messages: list = list(initial_state["messages"])
 
@@ -256,6 +258,110 @@ async def _start_mcp_server() -> tuple[uvicorn.Server, int]:
     return server, port
 
 
+# ── Buy & Hold benchmark ─────────────────────────────────────────────────────────
+
+def _compute_buy_and_hold(
+    tickers: List[str],
+    initial_capital: float,
+    start_dt: date,
+    end_dt: date,
+) -> Dict[str, Any]:
+    """
+    Computes an equal-weight buy-and-hold benchmark:
+    allocates capital equally among tickers, buys at start_dt prices,
+    holds until end_dt, and includes collected dividends.
+    Returns a dict with per-ticker breakdown and combined totals.
+    """
+    n = len(tickers)
+    allotment = initial_capital / n  # capital per ticker
+
+    per_ticker: Dict[str, Optional[Dict[str, float]]] = {}
+    combined_final = 0.0
+    combined_dividends = 0.0
+
+    for ticker in tickers:
+        try:
+            # ── Start price (first available at or after start_dt) ────────────
+            df_start = yf.download(
+                ticker,
+                start=start_dt.strftime("%Y-%m-%d"),
+                end=(start_dt + timedelta(days=7)).strftime("%Y-%m-%d"),
+                progress=False, auto_adjust=True,
+            )
+            if df_start.empty:
+                logger.warning(f"B&H: no start price for {ticker}")
+                per_ticker[ticker] = None
+                continue
+            start_price = float(df_start["Close"].iloc[0])
+
+            # ── End price (last available at or before end_dt) ────────────────
+            df_end = yf.download(
+                ticker,
+                start=(end_dt - timedelta(days=7)).strftime("%Y-%m-%d"),
+                end=(end_dt + timedelta(days=7)).strftime("%Y-%m-%d"),
+                progress=False, auto_adjust=True,
+            )
+            if df_end.empty:
+                logger.warning(f"B&H: no end price for {ticker}")
+                per_ticker[ticker] = None
+                continue
+            end_price = float(df_end["Close"].iloc[-1])
+
+            shares = allotment / start_price
+
+            # ── Dividends collected over the full period ──────────────────────
+            total_divs = 0.0
+            try:
+                divs = yf.Ticker(ticker).dividends
+                if divs is not None and not divs.empty:
+                    if isinstance(divs, pd.DataFrame):
+                        col = "Dividends" if "Dividends" in divs.columns else divs.columns[0]
+                        divs = divs[col]
+                    divs = divs.squeeze()
+                    idx_norm = pd.to_datetime(divs.index).tz_localize(None).normalize()
+                    divs_copy = divs.copy()
+                    divs_copy.index = idx_norm
+                    mask = (
+                        (divs_copy.index >= pd.Timestamp(start_dt))
+                        & (divs_copy.index <= pd.Timestamp(end_dt))
+                    )
+                    total_divs = float(divs_copy[mask].sum()) * shares
+            except Exception as de:
+                logger.debug(f"B&H dividend fetch failed for {ticker}: {de}")
+
+            final_val = shares * end_price + total_divs
+            roi = (final_val - allotment) / allotment * 100
+
+            per_ticker[ticker] = {
+                "start_price": start_price,
+                "end_price": end_price,
+                "shares": shares,
+                "allotment": allotment,
+                "dividends": total_divs,
+                "final_value": final_val,
+                "roi_pct": roi,
+            }
+            combined_final += final_val
+            combined_dividends += total_divs
+
+        except Exception as e:
+            logger.warning(f"B&H calculation failed for {ticker}: {e}")
+            per_ticker[ticker] = None
+
+    valid = [v for v in per_ticker.values() if v is not None]
+    combined_roi = (
+        (combined_final - initial_capital) / initial_capital * 100
+        if valid else 0.0
+    )
+
+    return {
+        "per_ticker": per_ticker,
+        "combined_final_value": combined_final,
+        "combined_dividends": combined_dividends,
+        "combined_roi_pct": combined_roi,
+    }
+
+
 # ── Main backtest ────────────────────────────────────────────────────────────────
 
 async def run(
@@ -289,6 +395,10 @@ async def run(
     portfolio = Portfolio(cash=initial_capital)
     store = DecisionStore(run_id=run_id)
     agent_logger = _setup_agent_log(run_id)
+
+    # Initialize SQLite runs store
+    runs_store = RunsStore(settings.sqlite_path)
+    runs_store.create_schema()
     if reset:
         console.print("[yellow]Resetting Qdrant collection…[/yellow]")
         store.clear_collection()
@@ -398,15 +508,24 @@ async def run(
                         updated_prices[ticker] = float(df["Close"].iloc[0])
                 except Exception:
                     pass
+            updated_snapshot = portfolio.snapshot(updated_prices)
             store.save_decision(
                 date=date_str,
                 portfolio_value=portfolio.total_value(updated_prices),
                 trades_executed=[t.to_dict() for t in new_trades],
                 agent_summary=agent_summary,
-                portfolio_snapshot=portfolio.snapshot(updated_prices),
+                portfolio_snapshot=updated_snapshot,
             )
         except Exception as e:
             logger.warning(f"Could not save decision to Qdrant: {e}")
+            updated_snapshot = portfolio_snapshot
+
+        # 6. Persist snapshot and trades to SQLite
+        try:
+            runs_store.save_snapshot(run_id, date_str, updated_snapshot)
+            runs_store.save_trades(run_id, [t.to_dict() for t in new_trades])
+        except Exception as e:
+            logger.warning(f"Could not save step to SQLite: {e}")
 
         prev_date = current_dt
 
@@ -426,7 +545,18 @@ async def run(
     final_value = portfolio.total_value(final_prices)
     roi = ((final_value - initial_value) / initial_value) * 100
 
-    # Performance table
+    # ── Buy & Hold benchmark ──────────────────────────────────────────────────
+    console.print("[dim]Computing buy & hold benchmark…[/dim]")
+    bh = _compute_buy_and_hold(
+        tickers=tickers,
+        initial_capital=initial_value,
+        start_dt=simulation_dates[0],
+        end_dt=simulation_dates[-1],
+    )
+    bh_roi = bh["combined_roi_pct"]
+    alpha = roi - bh_roi  # agent outperformance vs benchmark
+
+    # Performance table (agent)
     perf_table = Table(title="Portfolio Performance", box=box.ROUNDED)
     perf_table.add_column("Metric", style="cyan")
     perf_table.add_column("Value", style="bold")
@@ -437,6 +567,61 @@ async def run(
     perf_table.add_row("Trades Executed", str(len(portfolio.trades)))
     perf_table.add_row("Remaining Cash", f"${portfolio.cash:,.2f}")
     console.print(perf_table)
+
+    # Buy & Hold comparison table (per ticker + combined)
+    bh_table = Table(
+        title="Buy & Hold Benchmark (equal-weight, holds full period)",
+        box=box.ROUNDED,
+    )
+    bh_table.add_column("Ticker", style="cyan")
+    bh_table.add_column("Start Price", justify="right")
+    bh_table.add_column("End Price", justify="right")
+    bh_table.add_column("Allotment", justify="right")
+    bh_table.add_column("Dividends", justify="right")
+    bh_table.add_column("Final Value", justify="right")
+    bh_table.add_column("ROI %", justify="right")
+
+    for ticker in tickers:
+        td = bh["per_ticker"].get(ticker)
+        if td is None:
+            bh_table.add_row(ticker, "N/A", "N/A", "N/A", "N/A", "N/A", "[yellow]N/A[/yellow]")
+        else:
+            r_color = "green" if td["roi_pct"] >= 0 else "red"
+            bh_table.add_row(
+                ticker,
+                f"${td['start_price']:.2f}",
+                f"${td['end_price']:.2f}",
+                f"${td['allotment']:,.2f}",
+                f"${td['dividends']:,.2f}",
+                f"${td['final_value']:,.2f}",
+                f"[{r_color}]{td['roi_pct']:+.2f}%[/{r_color}]",
+            )
+
+    bh_color = "green" if bh_roi >= 0 else "red"
+    alpha_color = "green" if alpha >= 0 else "red"
+    bh_table.add_section()
+    bh_table.add_row(
+        "[bold]COMBINED[/bold]",
+        "", "",
+        f"${initial_value:,.2f}",
+        f"${bh['combined_dividends']:,.2f}",
+        f"${bh['combined_final_value']:,.2f}",
+        f"[bold {bh_color}]{bh_roi:+.2f}%[/bold {bh_color}]",
+    )
+    console.print(bh_table)
+
+    # Summary: agent vs benchmark
+    vs_table = Table(title="Agent vs Buy & Hold", box=box.SIMPLE_HEAD)
+    vs_table.add_column("Strategy", style="cyan")
+    vs_table.add_column("ROI %", justify="right", style="bold")
+    vs_table.add_row("Agent", f"{roi:+.2f}%")
+    vs_table.add_row("Buy & Hold", f"{bh_roi:+.2f}%")
+    vs_table.add_section()
+    vs_table.add_row(
+        "Alpha (Agent − B&H)",
+        f"[{alpha_color}]{alpha:+.2f} pp[/{alpha_color}]",
+    )
+    console.print(vs_table)
 
     # Open positions table
     if portfolio.positions:
@@ -483,6 +668,26 @@ async def run(
         console.print(trades_table)
 
     console.print(f"\n[bold]Decisions saved in Qdrant:[/bold] collection '{settings.qdrant_collection}'")
+
+    # Persist final metrics to SQLite
+    try:
+        runs_store.save_run(
+            run_id=run_id,
+            tickers=tickers,
+            initial_capital=initial_value,
+            years=years,
+            interval=interval,
+            final_value=final_value,
+            roi_pct=roi,
+            dividends_received=portfolio.dividends_received,
+            num_trades=len(portfolio.trades),
+            cash_remaining=portfolio.cash,
+            bh_roi_pct=bh_roi,
+        )
+        console.print(f"[bold]Run saved to SQLite:[/bold] {settings.sqlite_path} (run_id={run_id})")
+    except Exception as e:
+        logger.warning(f"Could not save run summary to SQLite: {e}")
+
     console.rule()
 
     # Graceful MCP server shutdown — give uvicorn a moment to close SSE connections
