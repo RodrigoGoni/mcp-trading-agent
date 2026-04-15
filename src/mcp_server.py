@@ -173,6 +173,149 @@ def get_company_info(tickers: Union[str, list]) -> str:
 
 
 @mcp.tool()
+def get_fundamentals(tickers: Union[str, list]) -> str:
+    """Get comprehensive fundamental data for ONE ticker: valuation, profitability,
+    financial health, growth metrics, and the last 4 quarters of revenue + gross profit.
+    Use this to decide if a stock is cheap/expensive (P/E, P/B, EV/EBITDA),
+    financially healthy (debt/equity, current ratio, free cash flow),
+    and growing (revenue growth, earnings growth, EPS trend).
+    Args: tickers (str, e.g. 'AAPL').
+    Returns JSON with sections: valuation, profitability, health, per_share, signals, quarterly_trend."""
+    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    current = _current_date or datetime.today().strftime("%Y-%m-%d")
+    current_dt = pd.Timestamp(current)
+
+    def _safe(info: dict, key: str, digits: int = 4):
+        v = info.get(key)
+        if v is None or (isinstance(v, float) and (v != v)):  # NaN check
+            return None
+        try:
+            return round(float(v), digits)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+
+        # ── Valuation multiples ──────────────────────────────────────────────────
+        valuation = {
+            "trailing_pe":          _safe(info, "trailingPE", 2),
+            "forward_pe":           _safe(info, "forwardPE", 2),
+            "peg_ratio":            _safe(info, "pegRatio", 2),
+            "price_to_book":        _safe(info, "priceToBook", 2),
+            "price_to_sales":       _safe(info, "priceToSalesTrailing12Months", 2),
+            "ev_to_ebitda":         _safe(info, "enterpriseToEbitda", 2),
+            "ev_to_revenue":        _safe(info, "enterpriseToRevenue", 2),
+            "market_cap":           _safe(info, "marketCap", 0),
+            "note": (
+                "Low P/E (<15) may indicate value. High P/E (>30) implies growth expectations. "
+                "PEG<1 = potentially undervalued vs growth. EV/EBITDA<10 = cheap."
+            ),
+        }
+
+        # ── Profitability ─────────────────────────────────────────────────────────
+        profitability = {
+            "gross_margin":     _safe(info, "grossMargins", 4),
+            "operating_margin": _safe(info, "operatingMargins", 4),
+            "profit_margin":    _safe(info, "profitMargins", 4),
+            "return_on_equity": _safe(info, "returnOnEquity", 4),
+            "return_on_assets": _safe(info, "returnOnAssets", 4),
+            "note": "ROE>0.15 = strong. Profit margin>10% = healthy.",
+        }
+
+        # ── Financial health ─────────────────────────────────────────────────────
+        health = {
+            "debt_to_equity":    _safe(info, "debtToEquity", 2),
+            "current_ratio":     _safe(info, "currentRatio", 2),
+            "quick_ratio":       _safe(info, "quickRatio", 2),
+            "total_debt":        _safe(info, "totalDebt", 0),
+            "total_cash":        _safe(info, "totalCash", 0),
+            "free_cash_flow":    _safe(info, "freeCashflow", 0),
+            "operating_cash_flow": _safe(info, "operatingCashflow", 0),
+            "note": "D/E<1 = low leverage. Current ratio>1 = liquid. Positive FCF = healthy.",
+        }
+
+        # ── Growth ─────────────────────────────────────────────────────────────────
+        growth = {
+            "revenue_growth":   _safe(info, "revenueGrowth", 4),
+            "earnings_growth":  _safe(info, "earningsGrowth", 4),
+            "earnings_quarterly_growth": _safe(info, "earningsQuarterlyGrowth", 4),
+        }
+
+        # ── Per-share metrics ─────────────────────────────────────────────────────
+        per_share = {
+            "trailing_eps":  _safe(info, "trailingEps", 4),
+            "forward_eps":   _safe(info, "forwardEps", 4),
+            "book_value":    _safe(info, "bookValue", 4),
+            "dividend_yield": _safe(info, "dividendYield", 4),
+            "payout_ratio":  _safe(info, "payoutRatio", 4),
+        }
+
+        # ── Market signals ─────────────────────────────────────────────────────────
+        target_price = _safe(info, "targetMeanPrice", 2)
+        current_price = _safe(info, "currentPrice") or _safe(info, "regularMarketPrice")
+        upside = None
+        if target_price and current_price and current_price > 0:
+            upside = round((target_price - current_price) / current_price * 100, 2)
+
+        signals = {
+            "beta":                 _safe(info, "beta", 3),
+            "52w_high":             _safe(info, "fiftyTwoWeekHigh", 2),
+            "52w_low":              _safe(info, "fiftyTwoWeekLow", 2),
+            "analyst_target_price": target_price,
+            "analyst_upside_pct":   upside,
+            "recommendation":       info.get("recommendationKey"),
+            "short_float_pct":      _safe(info, "shortPercentOfFloat", 4),
+            "sector":               info.get("sector"),
+            "industry":             info.get("industry"),
+        }
+
+        # ── Quarterly revenue + gross profit trend (last 4 quarters ≤ current_date) ─────
+        quarterly_trend: list[dict] = []
+        try:
+            qf = t.quarterly_financials
+            if qf is not None and not qf.empty:
+                # Columns are quarter-end dates (pd.Timestamp); filter to ≤ current_date
+                cols = [c for c in qf.columns
+                        if pd.Timestamp(c).tz_localize(None) <= current_dt]
+                cols = sorted(cols, reverse=True)[:4]  # last 4 quarters
+                for col in cols:
+                    row: dict = {"quarter_end": pd.Timestamp(col).strftime("%Y-%m-%d")}
+                    for label, key in [
+                        ("total_revenue",    "Total Revenue"),
+                        ("gross_profit",     "Gross Profit"),
+                        ("operating_income", "Operating Income"),
+                        ("net_income",       "Net Income"),
+                        ("ebitda",           "EBITDA"),
+                    ]:
+                        if key in qf.index:
+                            val = qf.loc[key, col]
+                            try:
+                                row[label] = int(val) if pd.notna(val) else None
+                            except (TypeError, ValueError):
+                                row[label] = None
+                    quarterly_trend.append(row)
+        except Exception as qe:
+            quarterly_trend = [{"error": f"Could not fetch quarterly financials: {qe}"}]
+
+        return json.dumps({
+            "ticker": ticker,
+            "as_of_date": current,
+            "valuation":        valuation,
+            "profitability":    profitability,
+            "health":           health,
+            "growth":           growth,
+            "per_share":        per_share,
+            "signals":          signals,
+            "quarterly_trend":  quarterly_trend,
+        })
+
+    except Exception as e:
+        return json.dumps({"ticker": ticker, "error": str(e)})
+
+
+@mcp.tool()
 def get_earnings_calendar(tickers: Union[str, list]) -> str:
     """Get earnings calendar for ONE ticker: last 4 past earnings dates and next upcoming date.
     CRITICAL for risk management: if earnings_risk=True, DO NOT BUY — high volatility expected.

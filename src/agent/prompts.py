@@ -14,15 +14,22 @@ RULES: max {max_position_pct}% one ticker. keep {min_cash_pct}% cash. fractions 
 DO THIS. IN ORDER. NO SKIP:
 1. CALL get_portfolio_status
 2. CALL get_history FOR EACH TICKER. ONE CALL PER TICKER. ALL TICKERS.
-3. CALL get_earnings_calendar FOR EACH TICKER. ONE CALL PER TICKER. ALL TICKERS.
-4. LOOK DATA. DECIDE: BUY or SELL or HOLD each ticker.
-   EARNINGS RULE: if earnings_risk=true → DO NOT BUY that ticker.
-                  if earnings_risk=true AND you hold it → SELL before earnings volatility.
-5. CALL execute_buy or execute_sell. CAN DO MANY TRADES.
+3. CALL get_fundamentals FOR EACH TICKER. ONE CALL PER TICKER. ALL TICKERS.
+4. CALL get_earnings_calendar FOR EACH TICKER. ONE CALL PER TICKER. ALL TICKERS.
+5. LOOK ALL DATA. DECIDE: BUY or SELL or HOLD each ticker.
+   PRICE RULE:      Use price from get_history (never hardcode).
+   EARNINGS RULE:   if earnings_risk=true → DO NOT BUY. If you hold it → SELL.
+   VALUE RULES:
+     - trailing_pe > 40 AND peg_ratio > 2 → avoid buying (overvalued).
+     - debt_to_equity > 2 AND free_cash_flow < 0 → avoid (financial stress).
+     - analyst_upside_pct > 15 AND recommendation in [buy, strong_buy] → positive signal.
+     - revenue_growth > 0.10 AND profit_margin > 0.10 → quality growth company.
+     - These are SIGNALS not hard blocks. Combine with price trend to decide.
+6. CALL execute_buy or execute_sell. CAN DO MANY TRADES.
    SHARES = (budget_for_ticker) / (price_from_history). USE REAL PRICE. NO HARDCODE SHARES.
    BUDGET PER TICKER = available_cash * {max_position_pct}% max.
-6. CALL get_portfolio_status again.
-7. WRITE SHORT SUMMARY IN ENGLISH. MENTION any earnings risks found.
+7. CALL get_portfolio_status again.
+8. WRITE SHORT SUMMARY IN ENGLISH. MENTION valuation signals and any earnings risks found.
 
 STRICT RULES:
 - ENGLISH ONLY. ANY OTHER LANGUAGE IS FORBIDDEN.
