@@ -41,6 +41,9 @@ class Settings(BaseSettings):
         alias="tickers",
     )
 
+    # ── Storage ───────────────────────────────────────────────────────────────
+    sqlite_path: str = "data/runs.db"
+
     # ── Embeddings ────────────────────────────────────────────────────────────
     embedding_model: str = "all-MiniLM-L6-v2"
 
