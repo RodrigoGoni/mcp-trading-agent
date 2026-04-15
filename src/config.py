@@ -48,8 +48,9 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
 
     # ── Risk management ───────────────────────────────────────────────────────
-    max_position_pct: float = 0.25   # max 25% of portfolio in a single ticker
-    min_cash_pct: float = 0.05       # minimum 5% in cash at all times
+    max_position_pct: float = 0.25       # max 25% of portfolio in a single ticker
+    min_cash_pct: float = 0.05           # minimum 5% in cash at all times
+    concentration_flag_pct: float = 0.20 # flag/alert threshold for position concentration
 
     @property
     def tickers(self) -> List[str]:

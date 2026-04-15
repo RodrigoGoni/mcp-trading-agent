@@ -22,6 +22,7 @@ langchain-mcp-adapters>=0.2
 # ── Mercado / Finanzas ────────────────────────────────────────────────────────
 yfinance>=1.2
 lxml>=5.0                # required by yfinance to parse earnings_dates HTML
+pandas-ta>=0.3.14b       # technical indicators: RSI, MACD, Bollinger, EMA
 
 # ── Vector store ─────────────────────────────────────────────────────────────
 qdrant-client>=1.17

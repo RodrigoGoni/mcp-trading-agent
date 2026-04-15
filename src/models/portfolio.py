@@ -43,9 +43,17 @@ class Trade:
     price: float
     total: float         # shares * price (positive = expense, negative = income)
     rationale: str = ""
+    realized_pnl: Optional[float] = None  # only set for SELL trades
+    avg_cost_at_sell: Optional[float] = None  # avg_cost of position at sell time
+
+    def realized_pnl_pct(self) -> Optional[float]:
+        """Relative P&L of the sell vs cost basis (None for BUY trades)."""
+        if self.realized_pnl is None or self.avg_cost_at_sell is None or self.avg_cost_at_sell == 0:
+            return None
+        return (self.price - self.avg_cost_at_sell) / self.avg_cost_at_sell * 100
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "date": str(self.date),
             "ticker": self.ticker,
             "action": self.action,
@@ -54,6 +62,11 @@ class Trade:
             "total": round(self.total, 2),
             "rationale": self.rationale,
         }
+        if self.realized_pnl is not None:
+            d["realized_pnl"] = round(self.realized_pnl, 2)
+            d["realized_pnl_pct"] = round(self.realized_pnl_pct() or 0.0, 2)
+            d["avg_cost_at_sell"] = round(self.avg_cost_at_sell or 0.0, 4)
+        return d
 
 
 @dataclass
@@ -89,15 +102,20 @@ class Portfolio:
         if ticker not in self.positions:
             return False
         pos = self.positions[ticker]
+        avg_cost_snapshot = pos.avg_cost  # capture before modifying position
         if shares > pos.shares:
             shares = pos.shares  # sell everything available
         proceeds = shares * price
+        realized = (price - avg_cost_snapshot) * shares
         self.cash += proceeds
         pos.shares -= shares
         if pos.shares < 1e-6:
             del self.positions[ticker]
-        self.trades.append(Trade(date=dt, ticker=ticker, action="SELL",
-                                 shares=shares, price=price, total=proceeds, rationale=rationale))
+        self.trades.append(Trade(
+            date=dt, ticker=ticker, action="SELL",
+            shares=shares, price=price, total=proceeds, rationale=rationale,
+            realized_pnl=realized, avg_cost_at_sell=avg_cost_snapshot,
+        ))
         return True
 
     def apply_dividends(self, ticker: str, dividend_per_share: float, dt: date) -> float:

@@ -33,6 +33,9 @@ from src.config import settings
 from src.simulation.backtest import run
 from src.storage.runs_store import RunsStore
 
+from rich.console import Console
+from rich.table import Table
+from rich import box
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -78,9 +81,6 @@ def parse_args() -> argparse.Namespace:
 
 def _cmd_list_runs() -> None:
     """Prints a summary table of all saved runs."""
-    from rich.console import Console
-    from rich.table import Table
-    from rich import box
 
     store = RunsStore(settings.sqlite_path)
     store.create_schema()
@@ -133,9 +133,6 @@ def _cmd_list_runs() -> None:
 
 def _cmd_compare(run_ids: list[str]) -> None:
     """Prints a side-by-side comparison table for the given run IDs."""
-    from rich.console import Console
-    from rich.table import Table
-    from rich import box
 
     store = RunsStore(settings.sqlite_path)
     store.create_schema()

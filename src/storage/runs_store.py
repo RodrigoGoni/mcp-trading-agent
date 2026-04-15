@@ -42,6 +42,16 @@ class RunsStore:
                 conn.execute("ALTER TABLE runs ADD COLUMN bh_roi_pct REAL")
             except sqlite3.OperationalError:
                 pass  # column already exists
+            # Add realized P&L columns to trades if upgrading from older schema
+            for col_def in [
+                "ALTER TABLE trades ADD COLUMN realized_pnl REAL",
+                "ALTER TABLE trades ADD COLUMN realized_pnl_pct REAL",
+                "ALTER TABLE trades ADD COLUMN avg_cost_at_sell REAL",
+            ]:
+                try:
+                    conn.execute(col_def)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
         with self._connect() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS runs (
@@ -70,15 +80,18 @@ class RunsStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS trades (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id      TEXT    NOT NULL,
-                    date        TEXT    NOT NULL,
-                    ticker      TEXT    NOT NULL,
-                    action      TEXT    NOT NULL,
-                    shares      REAL    NOT NULL,
-                    price       REAL    NOT NULL,
-                    total       REAL    NOT NULL,
-                    rationale   TEXT,
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id          TEXT    NOT NULL,
+                    date            TEXT    NOT NULL,
+                    ticker          TEXT    NOT NULL,
+                    action          TEXT    NOT NULL,
+                    shares          REAL    NOT NULL,
+                    price           REAL    NOT NULL,
+                    total           REAL    NOT NULL,
+                    rationale       TEXT,
+                    realized_pnl        REAL,
+                    realized_pnl_pct    REAL,
+                    avg_cost_at_sell    REAL,
                     FOREIGN KEY (run_id) REFERENCES runs(run_id)
                 );
 
@@ -115,14 +128,18 @@ class RunsStore:
                 float(t.get("price", 0.0)),
                 float(t.get("total", 0.0)),
                 t.get("rationale") or "",
+                float(t["realized_pnl"]) if t.get("realized_pnl") is not None else None,
+                float(t["realized_pnl_pct"]) if t.get("realized_pnl_pct") is not None else None,
+                float(t["avg_cost_at_sell"]) if t.get("avg_cost_at_sell") is not None else None,
             )
             for t in trades
         ]
         with self._connect() as conn:
             conn.executemany(
                 "INSERT INTO trades "
-                "(run_id, date, ticker, action, shares, price, total, rationale) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(run_id, date, ticker, action, shares, price, total, rationale, "
+                " realized_pnl, realized_pnl_pct, avg_cost_at_sell) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
 

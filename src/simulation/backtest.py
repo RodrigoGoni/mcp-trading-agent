@@ -21,15 +21,13 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import yfinance as yf
 import uvicorn
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.prebuilt import create_react_agent
 from rich.console import Console
 from rich.table import Table
 from rich import box
 
 import src.mcp_server as mcp_module
-from src.agent.graph import build_llm, build_agent_input
+from src.agent.graph import build_multiagent_graph, build_agent_input
 from src.config import settings
 from src.memory.qdrant_store import DecisionStore
 from src.models.portfolio import Portfolio
@@ -416,20 +414,14 @@ async def run(
     console.print(f"Simulation steps: [bold]{total_steps}[/bold]\n")
 
     initial_value = initial_capital
+    prev_value = initial_capital   # tracks portfolio value step-by-step for runtime delta
     prev_date = simulation_dates[0] if simulation_dates else date.today()
 
-    # langchain-mcp-adapters >=0.1.0: no usar async with en MultiServerMCPClient
-    mcp_client = MultiServerMCPClient(
-        {
-            "finance": {
-                "url": f"http://127.0.0.1:{mcp_port}/sse",
-                "transport": "sse",
-            }
-        }
-    )
-    tools = await mcp_client.get_tools()
-    llm = build_llm()
-    agent = create_react_agent(llm, tools)
+    # Build multi-agent graph (connects to MCP, partitions tools by role)
+    mcp_url = f"http://127.0.0.1:{mcp_port}/sse"
+    console.print(f"[dim]Building multi-agent graph → {mcp_url}[/dim]")
+    agent = await build_multiagent_graph(mcp_url)
+    console.print("[green]Multi-agent graph ready.[/green]\n")
 
     for i, current_dt in enumerate(simulation_dates, start=1):
         date_str = current_dt.strftime("%Y-%m-%d")
@@ -456,8 +448,18 @@ async def run(
                 pass
         portfolio_snapshot = portfolio.snapshot(prices_now)
         current_value = portfolio.total_value(prices_now)
-        console.print(f"  Portfolio: [bold]${current_value:,.2f}[/bold] "
-                      f"(cash: ${portfolio.cash:,.2f})")
+        step_delta = current_value - prev_value
+        total_delta = current_value - initial_value
+        step_delta_pct = step_delta / prev_value * 100 if prev_value else 0.0
+        total_delta_pct = total_delta / initial_value * 100 if initial_value else 0.0
+        step_color = "green" if step_delta >= 0 else "red"
+        total_color = "green" if total_delta >= 0 else "red"
+        console.print(
+            f"  Portfolio: [bold]${current_value:,.2f}[/bold]  "
+            f"(cash: ${portfolio.cash:,.2f})  "
+            f"[{step_color}]Δstep {step_delta:+,.2f} ({step_delta_pct:+.2f}%)[/{step_color}]  "
+            f"[{total_color}]Δtotal {total_delta:+,.2f} ({total_delta_pct:+.2f}%)[/{total_color}]"
+        )
 
         # 3. Invoke the agent (streaming for real-time observability)
         prev_trade_count = len(portfolio.trades)
@@ -487,9 +489,15 @@ async def run(
         if new_trades:
             for tr in new_trades:
                 color = "green" if tr.action == "BUY" else "red"
+                pnl_suffix = ""
+                if tr.realized_pnl is not None:
+                    pnl_color = "green" if tr.realized_pnl >= 0 else "red"
+                    pnl_pct = tr.realized_pnl_pct()
+                    pnl_pct_str = f" ({pnl_pct:+.2f}%)" if pnl_pct is not None else ""
+                    pnl_suffix = f"  [[{pnl_color}]P&L {tr.realized_pnl:+,.2f}{pnl_pct_str}[/{pnl_color}]]"
                 console.print(
                     f"  [{color}]{tr.action}[/{color}] {tr.shares:.4f} {tr.ticker} "
-                    f"@ ${tr.price:.2f} = ${tr.total:.2f}"
+                    f"@ ${tr.price:.2f} = ${tr.total:,.2f}{pnl_suffix}"
                 )
                 if tr.rationale:
                     console.print(f"    [dim]{tr.rationale[:120]}[/dim]")
@@ -527,6 +535,7 @@ async def run(
         except Exception as e:
             logger.warning(f"Could not save step to SQLite: {e}")
 
+        prev_value = current_value
         prev_date = current_dt
 
     # ── Final results ──────────────────────────────────────────────────────────────
@@ -557,16 +566,59 @@ async def run(
     alpha = roi - bh_roi  # agent outperformance vs benchmark
 
     # Performance table (agent)
+    # ── Compute realized / unrealized P&L breakdown ──────────────────────────
+    realized_pnl_total = sum(
+        tr.realized_pnl for tr in portfolio.trades
+        if tr.realized_pnl is not None
+    )
+    unrealized_pnl_total = sum(
+        pos.unrealized_pnl(final_prices.get(ticker, pos.avg_cost))
+        for ticker, pos in portfolio.positions.items()
+    )
+    # Realized P&L per ticker (sum of all sell trades for each ticker)
+    realized_by_ticker: Dict[str, float] = {}
+    for tr in portfolio.trades:
+        if tr.action == "SELL" and tr.realized_pnl is not None:
+            realized_by_ticker[tr.ticker] = realized_by_ticker.get(tr.ticker, 0.0) + tr.realized_pnl
+
+    abs_gain = final_value - initial_value
+    abs_gain_color = "green" if abs_gain >= 0 else "red"
+    roi_color = "green" if roi >= 0 else "red"
+    realized_color = "green" if realized_pnl_total >= 0 else "red"
+    unrealized_color = "green" if unrealized_pnl_total >= 0 else "red"
+
     perf_table = Table(title="Portfolio Performance", box=box.ROUNDED)
     perf_table.add_column("Metric", style="cyan")
     perf_table.add_column("Value", style="bold")
-    perf_table.add_row("Initial Capital", f"${initial_value:,.2f}")
-    perf_table.add_row("Final Value", f"${final_value:,.2f}")
-    perf_table.add_row("Total ROI", f"{roi:+.2f}%")
-    perf_table.add_row("Dividends Received", f"${portfolio.dividends_received:,.2f}")
-    perf_table.add_row("Trades Executed", str(len(portfolio.trades)))
-    perf_table.add_row("Remaining Cash", f"${portfolio.cash:,.2f}")
+    perf_table.add_row("Initial Capital",    f"${initial_value:,.2f}")
+    perf_table.add_row("Final Value",         f"${final_value:,.2f}")
+    perf_table.add_row("Absolute Gain/Loss",  f"[{abs_gain_color}]{abs_gain:+,.2f}[/{abs_gain_color}]")
+    perf_table.add_row("Total ROI",           f"[{roi_color}]{roi:+.2f}%[/{roi_color}]")
+    perf_table.add_row("Realized P&L",        f"[{realized_color}]{realized_pnl_total:+,.2f}[/{realized_color}]")
+    perf_table.add_row("Unrealized P&L",      f"[{unrealized_color}]{unrealized_pnl_total:+,.2f}[/{unrealized_color}]")
+    perf_table.add_row("Dividends Received",  f"${portfolio.dividends_received:,.2f}")
+    perf_table.add_row("Trades Executed",     str(len(portfolio.trades)))
+    perf_table.add_row("Remaining Cash",      f"${portfolio.cash:,.2f}")
     console.print(perf_table)
+
+    # ── Realized P&L per ticker ───────────────────────────────────────────────
+    sell_trades = [tr for tr in portfolio.trades if tr.action == "SELL"]
+    if sell_trades:
+        pnl_table = Table(title="Realized P&L by Ticker (closed positions)", box=box.ROUNDED)
+        pnl_table.add_column("Ticker", style="cyan")
+        pnl_table.add_column("Realized P&L", justify="right")
+        pnl_table.add_column("Sells", justify="right")
+        total_shown = 0.0
+        for ticker in sorted(realized_by_ticker, key=lambda t: realized_by_ticker[t]):
+            val = realized_by_ticker[ticker]
+            total_shown += val
+            n_sells = sum(1 for tr in sell_trades if tr.ticker == ticker)
+            color = "green" if val >= 0 else "red"
+            pnl_table.add_row(ticker, f"[{color}]{val:+,.2f}[/{color}]", str(n_sells))
+        pnl_table.add_section()
+        t_color = "green" if total_shown >= 0 else "red"
+        pnl_table.add_row("[bold]TOTAL[/bold]", f"[bold {t_color}]{total_shown:+,.2f}[/bold {t_color}]", str(len(sell_trades)))
+        console.print(pnl_table)
 
     # Buy & Hold comparison table (per ticker + combined)
     bh_table = Table(
@@ -653,17 +705,33 @@ async def run(
         trades_table.add_column("Action")
         trades_table.add_column("Ticker")
         trades_table.add_column("Shares", justify="right")
+        trades_table.add_column("Avg Cost", justify="right")
         trades_table.add_column("Price", justify="right")
         trades_table.add_column("Total", justify="right")
+        trades_table.add_column("Realized P&L", justify="right")
+        trades_table.add_column("P&L %", justify="right")
         for tr in portfolio.trades:
             color = "green" if tr.action == "BUY" else "red"
+            if tr.realized_pnl is not None:
+                pnl_color = "green" if tr.realized_pnl >= 0 else "red"
+                pnl_str = f"[{pnl_color}]{tr.realized_pnl:+,.2f}[/{pnl_color}]"
+                pnl_pct_val = tr.realized_pnl_pct()
+                pnl_pct_str = f"[{pnl_color}]{pnl_pct_val:+.2f}%[/{pnl_color}]" if pnl_pct_val is not None else "—"
+                avg_cost_str = f"${tr.avg_cost_at_sell:.2f}" if tr.avg_cost_at_sell else "—"
+            else:
+                pnl_str = "—"
+                pnl_pct_str = "—"
+                avg_cost_str = "—"
             trades_table.add_row(
                 str(tr.date),
                 f"[{color}]{tr.action}[/{color}]",
                 tr.ticker,
                 f"{tr.shares:.4f}",
+                avg_cost_str,
                 f"${tr.price:.2f}",
                 f"${tr.total:,.2f}",
+                pnl_str,
+                pnl_pct_str,
             )
         console.print(trades_table)
 

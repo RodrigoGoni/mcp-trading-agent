@@ -1,0 +1,90 @@
+Waiting for vLLM at http://localhost:8000/health (up to 300s)…
+vLLM is ready.
+───────────────────────────────────────────────────────────── Finance Agent — Backtest Started ──────────────────────────────────────────────────────────────
+Initial capital: 10,000.00 USD
+Period: 1 year(s) | Interval: 1mo
+Tickers: AAPL, SPY, XLE
+
+/home/rodrigo/Desktop/maestria/RAG-CVs/.venv/lib/python3.12/site-packages/torch/cuda/__init__.py:180: UserWarning: CUDA initialization: The NVIDIA driver on your system is too old (found version 12040). Please update your GPU driver by downloading and installing a new version from the URL: http://www.nvidia.com/Download/index.aspx Alternatively, go to: https://pytorch.org to install a PyTorch version that has been compiled with your version of the CUDA driver. (Triggered internally at /pytorch/c10/cuda/CUDAFunctions.cpp:119.)
+  return torch._C._cuda_getDeviceCount() > 0
+[04/14/26 18:26:50] INFO     Use pytorch device_name: cpu                                                                          SentenceTransformer.py:210
+                    INFO     Load pretrained SentenceTransformer: all-MiniLM-L6-v2                                                 SentenceTransformer.py:218
+Agent trace → /home/rodrigo/Desktop/maestria/finace-agent/logs/agent_20260414T212650.log
+Resetting Qdrant collection…
+[04/14/26 18:26:53] INFO     Collection 'finance_decisions' cleared.                                                                       qdrant_store.py:63
+Run ID: 20260414T212650
+                    INFO     MCP SSE server listening at http://127.0.0.1:18765/sse                                                           backtest.py:256
+Simulation steps: 13
+
+────────────────────────────────────────────────────────────────── Paso 1/13 — 2025-04-13 ───────────────────────────────────────────────────────────────────
+  Portfolio: $10,000.00 (cash: $10,000.00)
+  → TOOL get_portfolio_status  {}
+  → TOOL get_history  {"tickers": "AAPL", "end_date": "2025-04-13", "lookback_weeks": 12}
+  → TOOL get_history  {"tickers": "SPY", "end_date": "2025-04-13", "lookback_weeks": 12}
+  → TOOL get_history  {"tickers": "XLE", "end_date": "2025-04-13", "lookback_weeks": 12}
+  ← RESULT [{'type': 'text', 'text': '{"cash": 10000.0, "total_value": 10000.0, "dividends_received": 0.0, "positions": {}, "num_trades": 0}', 'id': 
+'lc_532d9c03-1a15-40dc-a12c-f29f6b4af1ce'}]
+  ← RESULT [{'type': 'text', 'text': '[{"date": "2025-01-20", "open": 222.783, "high": 225.7966, "low": 218.1881, "close": 221.5696, "volume": 277129600}, 
+{"date": "2025-01-27", "open": 222.8029, "high": 245.847
+  ← RESULT [{'type': 'text', 'text': '[{"date": "2025-01-20", "open": 592.0811, "high": 602.0466, "low": 590.1097, "close": 599.2767, "volume": 166485700}, 
+{"date": "2025-01-27", "open": 586.3049, "high": 601.23
+  ← RESULT [{'type': 'text', 'text': '[{"date": "2025-01-20", "open": 45.051, "high": 45.1856, "low": 43.8397, "close": 43.8925, "volume": 143698200}, 
+{"date": "2025-01-27", "open": 43.7435, "high": 43.8204, "lo
+  → TOOL get_earnings_calendar  {"tickers": "AAPL"}
+  ← RESULT [{'type': 'text', 'text': '{"ticker": "AAPL", "error": "Missing optional dependency \'lxml\'.  Use pip or conda to install lxml.", 
+"earnings_risk": false, "next_earnings_date": null}', 'id': 'lc_fe6d9
+  → TOOL get_earnings_calendar  {"tickers": "SPY"}
+  → TOOL get_earnings_calendar  {"tickers": "XLE"}
+[04/14/26 18:27:04] ERROR    SPY: No earnings dates found, symbol may be delisted                                                                 base.py:714
+[04/14/26 18:27:05] ERROR    XLE: No earnings dates found, symbol may be delisted                                                                 base.py:714
+  ← RESULT [{'type': 'text', 'text': '{"ticker": "SPY", "next_earnings_date": null, "days_to_earnings": null, "earnings_risk": false, "last_earnings": [], 
+"note": "No earnings data available"}', 'id': 'lc_95009a
+  ← RESULT [{'type': 'text', 'text': '{"ticker": "XLE", "next_earnings_date": null, "days_to_earnings": null, "earnings_risk": false, "last_earnings": [], 
+"note": "No earnings data available"}', 'id': 'lc_f93125
+  → TOOL get_price  {"tickers": ["AAPL", "SPY", "XLE"], "date": "2025-04-13"}
+  ← RESULT [{'type': 'text', 'text': '{"AAPL": {"date": "2025-04-11", "close": 197.2901, "open": 185.2924, "high": 198.6741, "low": 185.2526, "volume": 
+87435900}, "SPY": {"date": "2025-04-11", "close": 527.8885,
+  → TOOL get_portfolio_status  {}
+  ← RESULT [{'type': 'text', 'text': '{"cash": 10000.0, "total_value": 10000.0, "dividends_received": 0.0, "positions": {}, "num_trades": 0}', 'id': 
+'lc_fb363afc-833d-4bdc-ab8e-a4ecb5caf2c9'}]
+  DECISION: Based on the historical data and the current prices, here is the analysis and decision for each ticker:
+
+- **AAPL**: The historical data shows a volatile trend but no immediate earnings risk was detected. Current price is $197.2901.
+- **SPY**: The historical data indicates a stable trend. There is no earnings risk detected. Current price is $527.8885.
+- **XLE**: The historical data suggests a fluc
+  HOLD — no trades
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|██████████| 1/1 [00:00<00:00, 40.79it/s]
+────────────────────────────────────────────────────────────────── Paso 2/13 — 2025-05-13 ───────────────────────────────────────────────────────────────────
+  Portfolio: $10,000.00 (cash: $10,000.00)
+  → TOOL get_history  {"tickers": ["AAPL", "SPY", "XLE"], "end_date": "2025-05-13", "lookback_weeks": 12}
+  ← RESULT [{'type': 'text', 'text': '{"AAPL": [{"date": "2025-02-17", "open": 243.0905, "high": 247.6108, "low": 240.7905, "close": 244.4844, "volume": 
+166541000}, {"date": "2025-02-24", "open": 243.8671, "high
+  → TOOL get_earnings_calendar  {"tickers": "AAPL"}
+  → TOOL get_earnings_calendar  {"tickers": "SPY"}
+  → TOOL get_earnings_calendar  {"tickers": "XLE"}
+[04/14/26 18:27:26] ERROR    SPY: No earnings dates found, symbol may be delisted                                                                 base.py:714
+                    ERROR    XLE: No earnings dates found, symbol may be delisted                                                                 base.py:714
+  ← RESULT [{'type': 'text', 'text': '{"ticker": "AAPL", "error": "Missing optional dependency \'lxml\'.  Use pip or conda to install lxml.", 
+"earnings_risk": false, "next_earnings_date": null}', 'id': 'lc_03410
+  ← RESULT [{'type': 'text', 'text': '{"ticker": "SPY", "next_earnings_date": null, "days_to_earnings": null, "earnings_risk": false, "last_earnings": [], 
+"note": "No earnings data available"}', 'id': 'lc_848930
+  ← RESULT [{'type': 'text', 'text': '{"ticker": "XLE", "next_earnings_date": null, "days_to_earnings": null, "earnings_risk": false, "last_earnings": [], 
+"note": "No earnings data available"}', 'id': 'lc_422d16
+  → TOOL get_price  {"tickers": ["AAPL", "SPY", "XLE"], "date": "2025-05-13"}
+  ← RESULT [{'type': 'text', 'text': '{"AAPL": {"date": "2025-05-12", "close": 210.1505, "open": 210.3299, "high": 210.629, "low": 206.1227, "volume": 
+63775800}, "SPY": {"date": "2025-05-12", "close": 576.3826, 
+  → TOOL get_portfolio_status  {}
+  → TOOL execute_buy  {"tickers": "AAPL", "shares": 47.619, "rationale": "Based on historical performance and current price analysis."}
+  → TOOL execute_buy  {"tickers": "SPY", "shares": 16.387, "rationale": "Based on historical performance and current price analysis."}
+  → TOOL execute_buy  {"tickers": "XLE", "shares": 12.203, "rationale": "Based on historical performance and current price analysis."}
+  → TOOL get_portfolio_status  {}
+  ← RESULT [{'type': 'text', 'text': '{"cash": 10000.0, "total_value": 10000.0, "dividends_received": 0.0, "positions": {}, "num_trades": 0}', 'id': 
+'lc_6fbcb460-e681-4fd5-a9c4-c8f500df2376'}]
+  ← RESULT [{'type': 'text', 'text': '{"success": true, "message": "Bought 11.8962 AAPL at $210.15", "trade": {"date": "2025-05-12", "ticker": "AAPL", 
+"action": "BUY", "shares": 11.8962, "price": 210.1505, "tota
+  ← RESULT [{'type': 'text', 'text': '{"success": true, "message": "Bought 3.2531 SPY at $576.38", "trade": {"date": "2025-05-12", "ticker": "SPY", "action":
+"BUY", "shares": 3.2531, "price": 576.3826, "total": 
+  ← RESULT [{'type': 'text', 'text': '{"success": true, "message": "Bought 12.203 XLE at $40.97", "trade": {"date": "2025-05-12", "ticker": "XLE", "action": 
+"BUY", "shares": 12.203, "price": 40.9745, "total": 50
+  ← RESULT [{'type': 'text', 'text': '{"cash": 5124.97, "total_value": 10000.0, "dividends_received": 0.0, "positions": {"AAPL": {"ticker": "AAPL", "shares":
+11.8962, "avg_cost": 210.1505, "cost_basis": 2499.99,

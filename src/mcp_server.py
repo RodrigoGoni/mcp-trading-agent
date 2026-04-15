@@ -32,6 +32,7 @@ mcp = FastMCP("finance-agent")
 _portfolio: Portfolio = Portfolio(cash=settings.initial_capital)
 _current_date: str = ""
 _bought_this_step: set = set()   # tickers bought during the current step (dedup guard)
+_sold_this_step:   set = set()   # tickers sold  during the current step (cross guard)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -355,9 +356,34 @@ def get_earnings_calendar(tickers: Union[str, list]) -> str:
     ticker = tickers[0] if isinstance(tickers, list) else tickers
     current = _current_date or datetime.today().strftime("%Y-%m-%d")
     current_dt = datetime.strptime(current, "%Y-%m-%d")
+
+    _NO_EARNINGS_RESPONSE = {
+        "ticker": ticker,
+        "next_earnings_date": None,
+        "days_to_earnings": None,
+        "earnings_risk": False,
+        "last_earnings": [],
+        "note": "Not applicable — ETF/fund does not report quarterly earnings.",
+    }
+
     try:
         t = yf.Ticker(ticker)
-        ed = t.earnings_dates  # DataFrame indexed by Earnings Date (tz-aware)
+
+        # ETFs and mutual funds don't have earnings dates — skip the fetch entirely
+        # to avoid noisy yfinance ERROR logs ("symbol may be delisted")
+        quote_type = (t.info or {}).get("quoteType", "")
+        if quote_type.upper() in ("ETF", "MUTUALFUND", "INDEX", "CURRENCY", "FUTURE"):
+            return json.dumps(_NO_EARNINGS_RESPONSE)
+
+        import logging as _logging
+        _yf_logger = _logging.getLogger("yfinance")
+        _prev_level = _yf_logger.level
+        _yf_logger.setLevel(_logging.CRITICAL)   # silence during earnings fetch
+        try:
+            ed = t.earnings_dates
+        finally:
+            _yf_logger.setLevel(_prev_level)
+
         if ed is None or (hasattr(ed, "empty") and ed.empty):
             return json.dumps({"ticker": ticker, "next_earnings_date": None,
                                "days_to_earnings": None, "earnings_risk": False,
@@ -407,6 +433,206 @@ def get_earnings_calendar(tickers: Union[str, list]) -> str:
                            "earnings_risk": False, "next_earnings_date": None})
 
 
+@mcp.tool()
+def get_technical_indicators(tickers: Union[str, list], date: str) -> str:
+    """Compute technical indicators (RSI-14, MACD 12/26/9, Bollinger Bands 20, EMA-50)
+    for ONE ticker using daily price history up to `date` (no look-ahead).
+    Args: tickers (str, e.g. 'AAPL'), date (YYYY-MM-DD).
+    Returns JSON {ticker, date, rsi14, macd, macd_signal, macd_hist,
+                  bb_upper, bb_mid, bb_lower, ema50, close,
+                  signal (bullish/bearish/neutral), note}."""
+    try:
+        import pandas_ta as ta  # noqa: F401 — imported inside tool to keep top-level clean
+    except ImportError:
+        return json.dumps({"error": "pandas-ta not installed. Run: pip install pandas-ta"})
+
+    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    end = _cap_end(date)
+    # Need at least 60 trading days for EMA-50 + MACD-26
+    start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=120)).strftime("%Y-%m-%d")
+
+    try:
+        df = yf.download(ticker, start=start, end=end,
+                         interval="1d", progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return json.dumps({"ticker": ticker, "error": "No price data available"})
+
+        # Flatten multi-level columns (newer yfinance)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        close = df["Close"].squeeze()
+
+        # ── RSI-14 ────────────────────────────────────────────────────────────
+        rsi_series = ta.rsi(close, length=14)
+        rsi = round(float(rsi_series.iloc[-1]), 2) if rsi_series is not None and not rsi_series.empty else None
+
+        # ── MACD (12, 26, 9) ─────────────────────────────────────────────────
+        macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+        macd_val = macd_signal = macd_hist = None
+        if macd_df is not None and not macd_df.empty:
+            macd_val    = round(float(macd_df.iloc[-1, 0]), 4)
+            macd_signal = round(float(macd_df.iloc[-1, 1]), 4)
+            macd_hist   = round(float(macd_df.iloc[-1, 2]), 4)
+
+        # ── Bollinger Bands (20, 2) ────────────────────────────────────────────
+        bb_df = ta.bbands(close, length=20, std=2)
+        bb_lower = bb_mid = bb_upper = None
+        if bb_df is not None and not bb_df.empty:
+            bb_lower = round(float(bb_df.iloc[-1, 0]), 4)  # BBL
+            bb_mid   = round(float(bb_df.iloc[-1, 1]), 4)  # BBM
+            bb_upper = round(float(bb_df.iloc[-1, 2]), 4)  # BBU
+
+        # ── EMA-50 ────────────────────────────────────────────────────────────
+        ema50_series = ta.ema(close, length=50)
+        ema50 = round(float(ema50_series.iloc[-1]), 4) if ema50_series is not None and not ema50_series.empty else None
+
+        last_close = round(float(close.iloc[-1]), 4)
+        last_date  = str(df.index[-1].date())
+
+        # ── Composite signal ──────────────────────────────────────────────────
+        bullish_count = bearish_count = 0
+        if rsi is not None:
+            if rsi < 30:
+                bullish_count += 1   # oversold → potential bounce
+            elif rsi > 70:
+                bearish_count += 1   # overbought → caution
+        if macd_hist is not None:
+            if macd_hist > 0:
+                bullish_count += 1
+            else:
+                bearish_count += 1
+        if ema50 is not None:
+            if last_close > ema50:
+                bullish_count += 1   # price above trend
+            else:
+                bearish_count += 1
+        if bb_lower is not None and bb_upper is not None:
+            if last_close < bb_lower:
+                bullish_count += 1   # near lower band → potential bounce
+            elif last_close > bb_upper:
+                bearish_count += 1   # near upper band → potential reversal
+
+        if bullish_count >= 3:
+            signal = "bullish"
+        elif bearish_count >= 3:
+            signal = "bearish"
+        else:
+            signal = "neutral"
+
+        return json.dumps({
+            "ticker": ticker,
+            "date": last_date,
+            "close": last_close,
+            "rsi14": rsi,
+            "macd": macd_val,
+            "macd_signal": macd_signal,
+            "macd_hist": macd_hist,
+            "bb_upper": bb_upper,
+            "bb_mid": bb_mid,
+            "bb_lower": bb_lower,
+            "ema50": ema50,
+            "signal": signal,
+            "note": (
+                f"RSI<30=oversold, RSI>70=overbought. "
+                f"MACD_hist>0=bullish momentum. Close>EMA50=uptrend. "
+                f"Signal={signal} ({bullish_count} bullish vs {bearish_count} bearish indicators)."
+            ),
+        })
+    except Exception as e:
+        return json.dumps({"ticker": ticker, "error": str(e)})
+
+
+@mcp.tool()
+def get_macro_context(date: str) -> str:
+    """Get macro market context using ETF proxies: VIX (volatility), ^TNX (10Y yield),
+    GLD (gold / risk-off), UUP (USD index). Derives a market mode: risk_on / risk_off / neutral.
+    No parameters beyond date (YYYY-MM-DD). Use BEFORE making portfolio decisions.
+    Returns JSON {date, vix, tnx_yield_pct, gold_price, usd_index,
+                  market_mode, signals, interpretation}."""
+    end = _cap_end(date)
+    start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
+
+    data: dict = {}
+    proxies = {
+        "vix":  "^VIX",
+        "tnx":  "^TNX",
+        "gold": "GLD",
+        "usd":  "UUP",
+    }
+    for key, sym in proxies.items():
+        try:
+            df = yf.download(sym, start=start, end=end,
+                             interval="1d", progress=False, auto_adjust=True)
+            if df is not None and not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                data[key] = round(float(df["Close"].iloc[-1]), 4)
+            else:
+                data[key] = None
+        except Exception:
+            data[key] = None
+        time.sleep(0.3)
+
+    vix  = data.get("vix")
+    tnx  = data.get("tnx")
+    gold = data.get("gold")
+    usd  = data.get("usd")
+
+    # ── Market mode heuristics ────────────────────────────────────────────────
+    risk_off_signals: list[str] = []
+    risk_on_signals:  list[str] = []
+
+    if vix is not None:
+        if vix > 25:
+            risk_off_signals.append(f"VIX={vix} (>25 → high fear)")
+        elif vix < 15:
+            risk_on_signals.append(f"VIX={vix} (<15 → low fear, complacency)")
+        else:
+            risk_on_signals.append(f"VIX={vix} (15-25 → moderate)")
+
+    if tnx is not None:
+        if tnx > 4.5:
+            risk_off_signals.append(f"10Y yield={tnx}% (>4.5% → expensive money, pressure on growth)")
+        elif tnx < 3.0:
+            risk_on_signals.append(f"10Y yield={tnx}% (<3% → cheap money, supports equities)")
+        else:
+            risk_on_signals.append(f"10Y yield={tnx}% (neutral 3-4.5%)")
+
+    if gold is not None and gold > 180:   # GLD ~$180+ historically correlates with risk-off
+        risk_off_signals.append(f"Gold/GLD=${gold} (elevated → risk-off demand)")
+    elif gold is not None:
+        risk_on_signals.append(f"Gold/GLD=${gold} (moderate)")
+
+    if len(risk_off_signals) >= 2:
+        market_mode = "risk_off"
+        interpretation = (
+            "Market is in RISK-OFF mode. Prefer defensive positions, reduce exposure to "
+            "high-beta growth stocks. Consider holding more cash or defensive sectors."
+        )
+    elif len(risk_on_signals) >= 2:
+        market_mode = "risk_on"
+        interpretation = (
+            "Market is in RISK-ON mode. Conditions favor growth and momentum stocks. "
+            "Volatility is low and borrowing is relatively cheap."
+        )
+    else:
+        market_mode = "neutral"
+        interpretation = "Mixed signals. Proceed with balanced positioning and normal risk management."
+
+    return json.dumps({
+        "date": end,
+        "vix": vix,
+        "tnx_yield_pct": tnx,
+        "gold_price_gld": gold,
+        "usd_index_uup": usd,
+        "market_mode": market_mode,
+        "risk_off_signals": risk_off_signals,
+        "risk_on_signals": risk_on_signals,
+        "interpretation": interpretation,
+    })
+
+
 # ── Tools del portfolio ────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -430,11 +656,20 @@ def execute_buy(tickers: Union[str, list], shares: float, rationale: str = "") -
     """Buy `shares` of ONE ticker at current market price.
     Args: tickers (str, e.g. 'AAPL'), shares (float), rationale (str, optional).
     Returns JSON {success, message, trade}."""
-    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    if isinstance(tickers, list):
+        if not tickers:
+            return json.dumps({"success": False, "message": "tickers list is empty — provide a ticker symbol as a string, e.g. 'AAPL'"})
+        ticker = tickers[0]
+    else:
+        ticker = str(tickers).strip()
     # Deduplication guard: reject a second buy of the same ticker in the same step
     if ticker in _bought_this_step:
         return json.dumps({"success": False,
                            "message": f"Already bought {ticker} this step. Skipping duplicate."})
+    # Cross guard: never buy a ticker that was already sold in the same step
+    if ticker in _sold_this_step:
+        return json.dumps({"success": False,
+                           "message": f"{ticker} was already sold this step. Cannot buy and sell the same ticker in one cycle."})
     date_str = _current_date or datetime.today().strftime("%Y-%m-%d")
     price_data = json.loads(get_price(ticker, date_str))  # type: ignore[possibly-undefined]
     if "error" in price_data:
@@ -470,7 +705,16 @@ def execute_sell(tickers: Union[str, list], shares: float, rationale: str = "") 
     """Sell `shares` of ONE ticker at current market price.
     Args: tickers (str, e.g. 'AAPL'), shares (float; use 999999 to sell all), rationale (str, optional).
     Returns JSON {success, message, trade}."""
-    ticker = tickers[0] if isinstance(tickers, list) else tickers
+    if isinstance(tickers, list):
+        if not tickers:
+            return json.dumps({"success": False, "message": "tickers list is empty — provide a ticker symbol as a string, e.g. 'AAPL'"})
+        ticker = tickers[0]
+    else:
+        ticker = str(tickers).strip()
+    # Cross guard: never sell a ticker that was already bought in the same step
+    if ticker in _bought_this_step:
+        return json.dumps({"success": False,
+                           "message": f"{ticker} was already bought this step. Cannot sell and buy the same ticker in one cycle."})
     date_str = _current_date or datetime.today().strftime("%Y-%m-%d")
     if ticker not in _portfolio.positions:  # type: ignore[possibly-undefined]
         return json.dumps({"success": False, "message": f"No open position for {ticker}"})
@@ -482,6 +726,7 @@ def execute_sell(tickers: Union[str, list], shares: float, rationale: str = "") 
     # If shares > actual position, sell() will sell everything
     ok = _portfolio.sell(ticker, shares, price, dt, rationale)
     if ok:
+        _sold_this_step.add(ticker)
         trade = _portfolio.trades[-1]
         return json.dumps({"success": True,
                            "message": f"Sold {trade.shares} {ticker} at ${price:.2f}",
@@ -498,10 +743,11 @@ def set_portfolio(portfolio: Portfolio) -> None:
 
 
 def set_current_date(date_str: str) -> None:
-    """Updates the current simulation date (and resets the dedup guard)."""
-    global _current_date, _bought_this_step
+    """Updates the current simulation date (and resets the dedup guards)."""
+    global _current_date, _bought_this_step, _sold_this_step
     _current_date = date_str
     _bought_this_step = set()
+    _sold_this_step = set()
 
 
 if __name__ == "__main__":
