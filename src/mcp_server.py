@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import datetime, timedelta
 from typing import Any, Union
 
@@ -97,13 +98,39 @@ def get_history(tickers: Union[str, list], end_date: str, lookback_weeks: int = 
     ticker_list = tickers if isinstance(tickers, list) else [tickers]
     end = _cap_end(end_date)
     start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(weeks=lookback_weeks)).strftime("%Y-%m-%d")
+    # Add +7 days buffer so the last partial week is captured (end is exclusive in yf)
+    end_fetched = _cap_end(
+        (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+    )
     results: dict = {}
     for ticker in ticker_list:
         try:
-            df = yf.download(ticker, start=start, end=end, interval="1wk",
-                             progress=False, auto_adjust=True)
-            if df.empty:
+            # Download DAILY data and resample to weekly.
+            # Avoids the yfinance "possibly delisted" false-positive that occurs
+            # with interval="1wk" on ranges that include holidays or partial weeks.
+            df = yf.download(ticker, start=start, end=end_fetched,
+                             interval="1d", progress=False, auto_adjust=True)
+            # Retry once after a short pause — Yahoo Finance throttles rapid calls
+            if df is None or df.empty:
+                time.sleep(1.5)
+                df = yf.download(ticker, start=start, end=end_fetched,
+                                 interval="1d", progress=False, auto_adjust=True)
+            if df is None or df.empty:
                 results[ticker] = {"error": f"No history for {ticker}"}
+                continue
+            # Flatten multi-level columns produced by newer yfinance versions
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            # Resample to weekly (week ending Friday)
+            df = df.resample("W-FRI").agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum",
+            }).dropna(subset=["Close"])
+            # Normalize index and filter to ≤ end_date (no look-ahead)
+            df.index = pd.to_datetime(df.index).tz_localize(None)
+            df = df[df.index <= pd.Timestamp(end)]
+            if df.empty:
+                results[ticker] = {"error": f"No history for {ticker} up to {end}"}
                 continue
             results[ticker] = [
                 {
@@ -118,6 +145,9 @@ def get_history(tickers: Union[str, list], end_date: str, lookback_weeks: int = 
             ]
         except Exception as e:
             results[ticker] = {"error": str(e)}
+        # Brief pause between tickers to avoid Yahoo Finance rate-limiting
+        if len(ticker_list) > 1:
+            time.sleep(0.5)
     # Backward-compat: single string → return list directly
     if isinstance(tickers, str):
         return json.dumps(results[tickers])
