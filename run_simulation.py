@@ -31,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import settings
 from src.simulation.backtest import run
+from src.storage.runs_store import RunsStore
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,10 +62,133 @@ def parse_args() -> argparse.Namespace:
         help="Clear the Qdrant collection before starting (removes ALL previous runs).",
     )
     parser.add_argument(
+        "--list-runs", action="store_true",
+        help="List all saved runs from the SQLite database and exit.",
+    )
+    parser.add_argument(
+        "--compare", nargs="+", metavar="RUN_ID",
+        help="Compare two or more run IDs side-by-side and exit.",
+    )
+    parser.add_argument(
         "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="WARNING",
         help="Logging level. Default: WARNING",
     )
     return parser.parse_args()
+
+
+def _cmd_list_runs() -> None:
+    """Prints a summary table of all saved runs."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+
+    store = RunsStore(settings.sqlite_path)
+    store.create_schema()
+    rows = store.list_runs()
+    console = Console()
+
+    if not rows:
+        console.print("[yellow]No runs found in the database.[/yellow]")
+        console.print(f"[dim]DB path: {settings.sqlite_path}[/dim]")
+        return
+
+    table = Table(title=f"Saved Runs ({len(rows)} total)", box=box.ROUNDED)
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Created At (UTC)")
+    table.add_column("Tickers")
+    table.add_column("Capital", justify="right")
+    table.add_column("Years", justify="right")
+    table.add_column("Interval")
+    table.add_column("Final Value", justify="right")
+    table.add_column("ROI %", justify="right")
+    table.add_column("B&H ROI %", justify="right")
+    table.add_column("Alpha", justify="right")
+    table.add_column("Trades", justify="right")
+
+    for r in rows:
+        roi = r["roi_pct"]
+        bh = r["bh_roi_pct"]
+        roi_color = "green" if roi and roi >= 0 else "red"
+        bh_color = "green" if bh and bh >= 0 else "red"
+        alpha = (roi - bh) if (roi is not None and bh is not None) else None
+        alpha_color = "green" if alpha and alpha >= 0 else "red"
+        fv = r["final_value"]
+        table.add_row(
+            r["run_id"],
+            (r["created_at"] or "")[:19],
+            r["tickers"] or "",
+            f"${r['initial_capital']:,.0f}",
+            str(r["years"]),
+            r["interval"] or "",
+            f"${fv:,.2f}" if fv is not None else "N/A",
+            f"[{roi_color}]{roi:+.2f}%[/{roi_color}]" if roi is not None else "N/A",
+            f"[{bh_color}]{bh:+.2f}%[/{bh_color}]" if bh is not None else "N/A",
+            f"[{alpha_color}]{alpha:+.2f}pp[/{alpha_color}]" if alpha is not None else "N/A",
+            str(r["num_trades"]) if r["num_trades"] is not None else "N/A",
+        )
+
+    console.print(table)
+    console.print(f"[dim]DB: {settings.sqlite_path}[/dim]")
+
+
+def _cmd_compare(run_ids: list[str]) -> None:
+    """Prints a side-by-side comparison table for the given run IDs."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+
+    store = RunsStore(settings.sqlite_path)
+    store.create_schema()
+    rows = store.get_runs(run_ids)
+    console = Console()
+
+    if not rows:
+        console.print("[red]No matching runs found.[/red]")
+        return
+
+    # Index by run_id to preserve requested order
+    row_map = {r["run_id"]: r for r in rows}
+    ordered = [row_map[rid] for rid in run_ids if rid in row_map]
+
+    missing = [rid for rid in run_ids if rid not in row_map]
+    if missing:
+        console.print(f"[yellow]Run IDs not found: {', '.join(missing)}[/yellow]")
+
+    METRICS = [
+        ("Tickers",              lambda r: r["tickers"] or ""),
+        ("Initial Capital",      lambda r: f"${r['initial_capital']:,.2f}"),
+        ("Years",                lambda r: str(r["years"])),
+        ("Interval",             lambda r: r["interval"] or ""),
+        ("Final Value",          lambda r: f"${r['final_value']:,.2f}" if r["final_value"] is not None else "N/A"),
+        ("ROI %",                lambda r: f"{r['roi_pct']:+.2f}%" if r["roi_pct"] is not None else "N/A"),
+        ("Buy & Hold ROI %",     lambda r: f"{r['bh_roi_pct']:+.2f}%" if r["bh_roi_pct"] is not None else "N/A"),
+        ("Alpha (ROI − B&H)",    lambda r: f"{r['roi_pct']-r['bh_roi_pct']:+.2f} pp" if (r["roi_pct"] is not None and r["bh_roi_pct"] is not None) else "N/A"),
+        ("Dividends Received",   lambda r: f"${r['dividends_received']:,.2f}" if r["dividends_received"] is not None else "N/A"),
+        ("Trades Executed",      lambda r: str(r["num_trades"]) if r["num_trades"] is not None else "N/A"),
+        ("Cash Remaining",       lambda r: f"${r['cash_remaining']:,.2f}" if r["cash_remaining"] is not None else "N/A"),
+        ("Created At (UTC)",     lambda r: (r["created_at"] or "")[:19]),
+    ]
+
+    table = Table(title="Run Comparison", box=box.ROUNDED)
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    for r in ordered:
+        table.add_column(r["run_id"], justify="right")
+
+    baseline_roi = ordered[0]["roi_pct"] if ordered else None
+    for label, fn in METRICS:
+        cells = []
+        for idx, r in enumerate(ordered):
+            val = fn(r)
+            # Highlight ROI differences vs baseline
+            if label == "ROI %" and idx > 0 and baseline_roi is not None and r["roi_pct"] is not None:
+                delta = r["roi_pct"] - baseline_roi
+                color = "green" if delta >= 0 else "red"
+                val = f"{val} ([{color}]{delta:+.2f}pp[/{color}])"
+            cells.append(val)
+        table.add_row(label, *cells)
+
+    console.print(table)
+    console.print(f"[dim]DB: {settings.sqlite_path}[/dim]")
 
 
 def main() -> None:
@@ -83,6 +207,15 @@ def main() -> None:
             "mcp.server", "mcp.server.session", "mcp.server.lowlevel",
         ):
             logging.getLogger(_noisy).setLevel(logging.CRITICAL)
+
+    # ── Handle read-only sub-commands (no simulation needed) ─────────────────
+    if args.list_runs:
+        _cmd_list_runs()
+        return
+
+    if args.compare:
+        _cmd_compare(args.compare)
+        return
 
     # Parameters: CLI > .env
     tickers = [t.upper() for t in args.tickers] if args.tickers else settings.tickers
